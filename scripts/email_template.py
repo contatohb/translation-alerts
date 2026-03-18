@@ -2,7 +2,10 @@
 """
 Template HTML premium para newsletter de vagas de tradução.
 Design: dark/slate premium, cards por vaga, todos os campos do monitor.
-Compatível com Gmail (inline CSS, tabelas, sem media queries).
+
+Otimização de tamanho: estilos repetidos movidos para classes CSS no <head>.
+Resultado: HTML de ~70-90KB independente do número de vagas (vs. 307KB com inline).
+Compatível com Gmail (suporta <style> no <head> desde 2016).
 
 Campos esperados por vaga (do monitor_traducao.py):
   titulo, idioma_origem, idioma_destino, par_display,
@@ -15,6 +18,109 @@ from __future__ import annotations
 from datetime import date
 from typing import Dict, List
 
+
+# ─── CSS global (movido do inline para classes) ──────────────────
+CSS_GLOBAL = """
+  body { margin:0; padding:0; background:#0d1b2a; }
+  .wrap { background:#0d1b2a; padding:24px 0; }
+  .inner { max-width:640px; width:100%; }
+  /* Header */
+  .hdr { background:linear-gradient(135deg,#0a2540 0%,#1a3a5c 70%,#0d2d4a 100%);
+         border-radius:12px 12px 0 0; padding:28px 28px 22px 28px; }
+  .hdr-label { color:#5dade2; font-size:10px; font-weight:bold;
+               letter-spacing:2px; text-transform:uppercase;
+               font-family:Arial,sans-serif; margin-bottom:6px; }
+  .hdr-title { color:#fff; font-size:24px; font-weight:bold;
+               font-family:Arial,sans-serif; line-height:1.2; }
+  .hdr-sub { color:#7fa8c8; font-size:12px; font-family:Arial,sans-serif; margin-top:4px; }
+  .hdr-count-box { background:#0a2540; border:2px solid #2e86c1;
+                   border-radius:10px; padding:10px 16px; text-align:center; }
+  .hdr-count-n { color:#5dade2; font-size:28px; font-weight:900;
+                 font-family:Arial,sans-serif; line-height:1; }
+  .hdr-count-lbl { color:#4a6a8a; font-size:10px; text-transform:uppercase;
+                   letter-spacing:0.5px; font-family:Arial,sans-serif; }
+  /* Corpo */
+  .body-td { background:#162535; padding:22px 28px;
+             border-left:1px solid #1e3a52; border-right:1px solid #1e3a52; }
+  /* Footer */
+  .ftr { background:#0a1a2a; border-radius:0 0 12px 12px;
+         padding:18px 28px; border:1px solid #1e3a52; border-top:none; }
+  .ftr-txt { color:#3d5a73; font-size:11px; font-family:Arial,sans-serif; line-height:1.7; }
+  .ftr-name { color:#4a6a8a; }
+  .ftr-green { color:#27ae60; }
+  /* Sumário */
+  .sumario { background:#0d1b2a; border-radius:8px; margin-bottom:20px;
+             border:1px solid #1e3a52; }
+  .sumario-hdr { padding:8px 12px 6px 12px; border-bottom:1px solid #1e3a52; }
+  .sumario-lbl { color:#7f8fa6; font-size:10px; font-weight:bold;
+                 letter-spacing:1px; text-transform:uppercase; font-family:Arial,sans-serif; }
+  .sumario-td-l { padding:5px 12px; font-family:Arial,sans-serif;
+                  font-size:12px; color:#c5d5e8; }
+  .sumario-td-r { padding:5px 12px; font-family:Arial,sans-serif;
+                  font-size:12px; color:#5dade2; font-weight:bold; text-align:right; }
+  .sumario-total-l { padding:8px 12px; font-family:Arial,sans-serif;
+                     font-size:12px; color:#7f8fa6; font-weight:bold; }
+  .sumario-total-r { padding:8px 12px; font-family:Arial,sans-serif;
+                     font-size:15px; color:#fff; font-weight:bold; text-align:right; }
+  .sumario-sep { border-top:1px solid #1e3a52; }
+  /* Badge fonte */
+  .badge { font-size:10px; font-weight:bold; padding:2px 7px;
+           border-radius:4px; font-family:Arial,sans-serif; letter-spacing:0.5px; }
+  /* Seção fonte */
+  .sec-hdr-td { padding:0 0 12px 0; padding-left:14px; }
+  .sec-title { color:#fff; font-size:15px; font-weight:bold; font-family:Arial,sans-serif; }
+  .sec-count { color:#4a6a8a; font-size:12px; font-family:Arial,sans-serif; margin-left:8px; }
+  /* Card */
+  .card { margin-bottom:14px; border-radius:10px; border:1px solid #243447; }
+  .card-hdr-td { padding:10px 16px; border-bottom:1px solid #243447; }
+  .card-num { color:#4a6a8a; font-size:11px; font-family:Arial,sans-serif; margin-left:8px; }
+  .card-cv { font-size:11px; font-family:Arial,sans-serif; }
+  .card-title-td { padding:12px 16px 6px 16px; }
+  .card-link { color:#5dade2; font-size:14px; font-weight:bold;
+               text-decoration:none; font-family:Arial,sans-serif; line-height:1.4; }
+  .card-fields-td { padding:4px 16px 10px 16px; }
+  /* Campos */
+  .fl { padding:4px 14px 4px 0; color:#7f8fa6; font-size:12px;
+        white-space:nowrap; vertical-align:top; font-family:Arial,sans-serif; }
+  .fv { padding:4px 0; color:#c5d5e8; font-size:13px;
+        vertical-align:top; font-family:Arial,sans-serif; }
+  .fv-hi { color:#e8f0fe; }
+  /* Badge par de idiomas */
+  .par-badge { display:inline-block; padding:3px 10px; border-radius:10px;
+               font-size:12px; font-weight:bold; font-family:Arial,sans-serif; }
+  /* Bloco descrição */
+  .desc-box { padding:10px 14px; border-radius:0 6px 6px 0; background:#0d1b2a; }
+  .desc-lbl { color:#7f8fa6; font-size:10px; font-weight:bold;
+              text-transform:uppercase; letter-spacing:0.5px;
+              margin-bottom:6px; font-family:Arial,sans-serif; }
+  .desc-txt { color:#8fa8c0; font-size:12px; line-height:1.6; font-family:Arial,sans-serif; }
+  /* Bloco contato descoberto */
+  .cd-box { background:#0a2a1a; border-radius:0 6px 6px 0; padding:10px 14px; }
+  .cd-lbl { color:#27ae60; font-size:10px; font-weight:bold;
+            text-transform:uppercase; letter-spacing:0.5px;
+            margin-bottom:6px; font-family:Arial,sans-serif; }
+  .cd-sub { color:#4a6a8a; font-weight:normal; }
+  .cd-email { color:#27ae60; font-size:12px; font-family:Arial,sans-serif; text-decoration:none; }
+  .cd-site { color:#5dade2; font-size:12px; font-family:Arial,sans-serif; text-decoration:none; }
+  /* Botão */
+  .btn { display:inline-block; color:#fff; font-size:12px; font-weight:bold;
+         padding:7px 18px; border-radius:5px; text-decoration:none;
+         font-family:Arial,sans-serif; }
+  /* Avisos */
+  .avisos { margin-top:20px; background:#1a1a0d; border:1px solid #3a3a1a; border-radius:8px; }
+  .avisos-td { padding:12px 16px; }
+  .avisos-lbl { color:#b7950b; font-size:11px; font-weight:bold;
+                text-transform:uppercase; letter-spacing:0.5px;
+                margin-bottom:8px; font-family:Arial,sans-serif; }
+  .avisos-ul { color:#7d6608; font-size:12px; margin:0;
+               padding-left:16px; line-height:1.7; font-family:Arial,sans-serif; }
+  /* Vazio */
+  .vazio-td { text-align:center; padding:48px 24px; }
+  .vazio-icon { font-size:36px; margin-bottom:14px; }
+  .vazio-title { color:#8fa8c0; font-size:15px; font-weight:bold;
+                 margin-bottom:8px; font-family:Arial,sans-serif; }
+  .vazio-sub { color:#4a6a8a; font-size:12px; font-family:Arial,sans-serif; }
+"""
 
 # ─── Paleta por fonte ────────────────────────────────────────────
 FONTE_ESTILOS = {
@@ -49,7 +155,6 @@ _DEFAULT_ESTILO = {
     "label":     "Outros",
 }
 
-# Cores por par de idiomas
 PAR_CORES = {
     "EN → PT": "#2e86c1",
     "PT → EN": "#2e86c1",
@@ -75,13 +180,11 @@ def _campo_html(label: str, valor: str, destaque: bool = False) -> str:
     """Linha de campo label: valor em tabela."""
     if not valor or valor.strip() in ("", "-", "N/A"):
         return ""
-    cor_val = "#e8f0fe" if destaque else "#c5d5e8"
+    cls_val = "fv fv-hi" if destaque else "fv"
     return (
         f'<tr>'
-        f'<td style="padding:4px 14px 4px 0;color:#7f8fa6;font-size:12px;'
-        f'white-space:nowrap;vertical-align:top;font-family:Arial,sans-serif;">{label}</td>'
-        f'<td style="padding:4px 0;color:{cor_val};font-size:13px;'
-        f'vertical-align:top;font-family:Arial,sans-serif;">{valor}</td>'
+        f'<td class="fl">{label}</td>'
+        f'<td class="{cls_val}">{valor}</td>'
         f'</tr>'
     )
 
@@ -93,36 +196,27 @@ def _bloco_contato_descoberto(contato: Dict, accent: str) -> str:
     email = contato.get("email", "")
     site = contato.get("site", "")
     fonte_busca = contato.get("fonte_busca", "busca reversa")
-
     if not email and not site:
         return ""
 
     linhas = []
     if email:
-        mailto = f"mailto:{email}"
         linhas.append(
-            f'<a href="{mailto}" style="color:#27ae60;font-size:12px;'
-            f'font-family:Arial,sans-serif;text-decoration:none;">'
-            f'✉ {email}</a>'
+            f'<a href="mailto:{email}" class="cd-email">&#9993; {email}</a>'
         )
     if site:
+        site_txt = site[:60] + ("..." if len(site) > 60 else "")
         linhas.append(
-            f'<a href="{site}" style="color:#5dade2;font-size:12px;'
-            f'font-family:Arial,sans-serif;text-decoration:none;">'
-            f'🌐 {site[:60]}{"..." if len(site) > 60 else ""}</a>'
+            f'<a href="{site}" class="cd-site">&#127760; {site_txt}</a>'
         )
 
     conteudo = "<br>".join(linhas)
     return f'''
     <tr>
       <td colspan="2" style="padding:8px 0 4px 0;">
-        <div style="background:#0a2a1a;border-left:3px solid #27ae60;
-                    padding:10px 14px;border-radius:0 6px 6px 0;">
-          <div style="color:#27ae60;font-size:10px;font-weight:bold;
-                      text-transform:uppercase;letter-spacing:0.5px;
-                      margin-bottom:6px;font-family:Arial,sans-serif;">
-            Contato Descoberto <span style="color:#4a6a8a;font-weight:normal;">
-            (via {fonte_busca})</span>
+        <div class="cd-box" style="border-left:3px solid #27ae60;">
+          <div class="cd-lbl">Contato Descoberto
+            <span class="cd-sub">(via {fonte_busca})</span>
           </div>
           <div>{conteudo}</div>
         </div>
@@ -142,11 +236,10 @@ def _card_vaga(v: Dict, idx: int, total: int) -> str:
     tipo_contato = v.get("tipo_contato", "")
     contato_descoberto = v.get("contato_descoberto", {})
 
-    # Badge do par de idiomas
+    # Badge do par de idiomas (inline necessário pois cor varia por par)
     badge_par = (
-        f'<span style="display:inline-block;padding:3px 10px;border-radius:10px;'
-        f'background:{cor_par}22;color:{cor_par};font-size:12px;font-weight:bold;'
-        f'border:1px solid {cor_par}55;font-family:Arial,sans-serif;">{par}</span>'
+        f'<span class="par-badge" style="background:{cor_par}22;color:{cor_par};'
+        f'border:1px solid {cor_par}55;">{par}</span>'
     )
 
     # Campos da vaga
@@ -169,106 +262,75 @@ def _card_vaga(v: Dict, idx: int, total: int) -> str:
         descricao_html = f'''
         <tr>
           <td colspan="2" style="padding:10px 0 4px 0;">
-            <div style="background:#0d1b2a;border-left:3px solid {e["accent"]};
-                        padding:10px 14px;border-radius:0 6px 6px 0;">
-              <div style="color:#7f8fa6;font-size:10px;font-weight:bold;
-                          text-transform:uppercase;letter-spacing:0.5px;
-                          margin-bottom:6px;font-family:Arial,sans-serif;">Descrição</div>
-              <div style="color:#8fa8c0;font-size:12px;line-height:1.6;
-                          font-family:Arial,sans-serif;">{det}</div>
+            <div class="desc-box" style="border-left:3px solid {e["accent"]};">
+              <div class="desc-lbl">Descri&#231;&#227;o</div>
+              <div class="desc-txt">{det}</div>
             </div>
           </td>
         </tr>'''
 
-    # Bloco de contato descoberto (busca reversa)
+    # Bloco de contato descoberto
     contato_descoberto_html = _bloco_contato_descoberto(contato_descoberto, e["accent"])
 
     # Botão de ação principal
-    btn_label = "Ver vaga →"
+    btn_label = "Ver vaga &#8594;"
     btn_url = link_vaga
-
-    # Se há email direto na vaga
     if tipo_contato == "email" and link_contato and "@" in link_contato:
-        btn_label = "Enviar candidatura →"
+        btn_label = "Enviar candidatura &#8594;"
         btn_url = f"mailto:{link_contato}?subject=Candidatura%20-%20{titulo[:50].replace(' ', '%20')}"
-    # Se há email descoberto via busca reversa
     elif contato_descoberto.get("email") and not (tipo_contato == "email" and "@" in link_contato):
         email_desc = contato_descoberto["email"]
-        btn_label = "Contato direto →"
+        btn_label = "Contato direto &#8594;"
         btn_url = f"mailto:{email_desc}?subject=Candidatura%20-%20{titulo[:50].replace(' ', '%20')}"
     elif tipo_contato == "URL" and link_contato and link_contato != link_vaga:
-        btn_label = "Acessar formulário →"
+        btn_label = "Acessar formul&#225;rio &#8594;"
         btn_url = link_contato
 
     # Indicador de CV
-    cv_status = "⚠ CV: ação manual"
+    cv_status = "&#9888; CV: a&#231;&#227;o manual"
     cv_color = "#f39c12"
     if tipo_contato == "email" and link_contato and "@" in link_contato:
-        cv_status = "✉ Contato direto disponível"
+        cv_status = "&#9993; Contato direto dispon&#237;vel"
         cv_color = "#27ae60"
     elif contato_descoberto.get("email"):
-        cv_status = "🔍 Email descoberto"
+        cv_status = "Email descoberto"
         cv_color = "#2ecc71"
     elif contato_descoberto.get("site"):
-        cv_status = "🌐 Site encontrado"
+        cv_status = "Site encontrado"
         cv_color = "#3498db"
 
     return f'''
-    <!-- CARD #{idx} -->
-    <table width="100%" cellpadding="0" cellspacing="0" border="0"
-           style="margin-bottom:14px;border-radius:10px;overflow:hidden;
-                  background:#1a2b3c;border:1px solid #243447;">
-      <!-- Header do card -->
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" class="card"
+           style="background:#1a2b3c;">
       <tr>
-        <td style="background:{e["header_bg"]};padding:10px 16px;
-                   border-bottom:1px solid #243447;">
+        <td class="card-hdr-td" style="background:{e["header_bg"]};">
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
               <td>
-                <span style="background:{e["badge_bg"]};color:{e["badge_txt"]};
-                             font-size:10px;font-weight:bold;padding:2px 8px;
-                             border-radius:4px;font-family:Arial,sans-serif;
-                             letter-spacing:0.5px;">{e["label"]}</span>
-                <span style="color:#4a6a8a;font-size:11px;
-                             font-family:Arial,sans-serif;margin-left:8px;">
-                  #{idx}/{total}
-                </span>
+                <span class="badge" style="background:{e["badge_bg"]};color:{e["badge_txt"]};">{e["label"]}</span>
+                <span class="card-num">#{idx}/{total}</span>
               </td>
               <td align="right">
-                <span style="color:{cv_color};font-size:11px;
-                             font-family:Arial,sans-serif;">
-                  {cv_status}
-                </span>
+                <span class="card-cv" style="color:{cv_color};">{cv_status}</span>
               </td>
             </tr>
           </table>
         </td>
       </tr>
-      <!-- Título -->
       <tr>
-        <td style="padding:12px 16px 6px 16px;">
-          <a href="{link_vaga}"
-             style="color:#5dade2;font-size:14px;font-weight:bold;
-                    text-decoration:none;font-family:Arial,sans-serif;
-                    line-height:1.4;">{titulo}</a>
+        <td class="card-title-td">
+          <a href="{link_vaga}" class="card-link">{titulo}</a>
         </td>
       </tr>
-      <!-- Campos -->
       <tr>
-        <td style="padding:4px 16px 10px 16px;">
+        <td class="card-fields-td">
           <table cellpadding="0" cellspacing="0" border="0" width="100%">
             {campos}
             {descricao_html}
             {contato_descoberto_html}
             <tr>
               <td colspan="2" style="padding-top:12px;">
-                <a href="{btn_url}"
-                   style="display:inline-block;background:{e["accent"]};
-                          color:#ffffff;font-size:12px;font-weight:bold;
-                          padding:7px 18px;border-radius:5px;
-                          text-decoration:none;font-family:Arial,sans-serif;">
-                  {btn_label}
-                </a>
+                <a href="{btn_url}" class="btn" style="background:{e["accent"]};">{btn_label}</a>
               </td>
             </tr>
           </table>
@@ -286,24 +348,17 @@ def _secao_fonte(fonte: str, vagas: List[Dict], idx_inicio: int, total_geral: in
         _card_vaga(v, idx_inicio + i, total_geral)
         for i, v in enumerate(vagas)
     )
+    n = len(vagas)
     return f'''
-    <!-- SEÇÃO: {fonte} -->
     <table width="100%" cellpadding="0" cellspacing="0" border="0"
            style="margin-bottom:24px;">
       <tr>
-        <td style="padding:0 0 12px 0;border-left:4px solid {e["accent"]};
-                   padding-left:14px;">
-          <span style="color:#ffffff;font-size:15px;font-weight:bold;
-                       font-family:Arial,sans-serif;">{fonte}</span>
-          <span style="color:#4a6a8a;font-size:12px;
-                       font-family:Arial,sans-serif;margin-left:8px;">
-            {len(vagas)} vaga{"s" if len(vagas) != 1 else ""}
-          </span>
+        <td class="sec-hdr-td" style="border-left:4px solid {e["accent"]};">
+          <span class="sec-title">{fonte}</span>
+          <span class="sec-count">{n} vaga{"s" if n != 1 else ""}</span>
         </td>
       </tr>
-      <tr>
-        <td>{cards}</td>
-      </tr>
+      <tr><td>{cards}</td></tr>
     </table>'''
 
 
@@ -317,7 +372,7 @@ def gerar_html_email(
     hoje = date.today().strftime("%d/%m/%Y")
     total = len(vagas)
 
-    # Agrupar por fonte (ordem fixa)
+    # Agrupar por fonte
     fontes_ordem = ["ProZ.com", "Translators Café", "Translation Directory"]
     por_fonte: Dict[str, List[Dict]] = {f: [] for f in fontes_ordem}
     for v in vagas:
@@ -335,14 +390,14 @@ def gerar_html_email(
             secoes_html += _secao_fonte(f, lst, idx_atual, total)
             idx_atual += len(lst)
 
-    # Contar vagas com contato descoberto
-    n_contato_descoberto = sum(
-        1 for v in vagas
-        if v.get("contato_descoberto", {}).get("email") or v.get("contato_descoberto", {}).get("site")
-    )
+    # Contadores de contato
     n_email_direto = sum(
         1 for v in vagas
         if v.get("tipo_contato") == "email" and "@" in v.get("link_contato", "")
+    )
+    n_contato_descoberto = sum(
+        1 for v in vagas
+        if v.get("contato_descoberto", {}).get("email") or v.get("contato_descoberto", {}).get("site")
     )
 
     # Sumário por fonte
@@ -353,64 +408,35 @@ def gerar_html_email(
             e = _estilo(f)
             resumo_rows += f'''
             <tr>
-              <td style="padding:5px 12px;font-family:Arial,sans-serif;
-                         font-size:12px;color:#c5d5e8;">
-                <span style="background:{e["badge_bg"]};color:{e["badge_txt"]};
-                             font-size:10px;font-weight:bold;padding:2px 7px;
-                             border-radius:4px;margin-right:8px;">{e["label"]}</span>
+              <td class="sumario-td-l">
+                <span class="badge" style="background:{e["badge_bg"]};color:{e["badge_txt"]};margin-right:8px;">{e["label"]}</span>
               </td>
-              <td style="padding:5px 12px;font-family:Arial,sans-serif;
-                         font-size:12px;color:#5dade2;font-weight:bold;
-                         text-align:right;">{len(lst)}</td>
+              <td class="sumario-td-r">{len(lst)}</td>
             </tr>'''
 
-    # Linha de contatos descobertos no sumário
     if n_email_direto > 0 or n_contato_descoberto > 0:
         resumo_rows += f'''
-        <tr style="border-top:1px solid #1e3a52;">
-          <td style="padding:5px 12px;font-family:Arial,sans-serif;
-                     font-size:12px;color:#c5d5e8;">
-            <span style="color:#27ae60;font-size:11px;">✉ Email direto disponível</span>
-          </td>
-          <td style="padding:5px 12px;font-family:Arial,sans-serif;
-                     font-size:12px;color:#27ae60;font-weight:bold;
-                     text-align:right;">{n_email_direto}</td>
+        <tr class="sumario-sep">
+          <td class="sumario-td-l"><span style="color:#27ae60;font-size:11px;">&#9993; Email direto dispon&#237;vel</span></td>
+          <td class="sumario-td-r" style="color:#27ae60;">{n_email_direto}</td>
         </tr>'''
         if n_contato_descoberto > 0:
             resumo_rows += f'''
             <tr>
-              <td style="padding:5px 12px;font-family:Arial,sans-serif;
-                         font-size:12px;color:#c5d5e8;">
-                <span style="color:#2ecc71;font-size:11px;">🔍 Contato descoberto</span>
-              </td>
-              <td style="padding:5px 12px;font-family:Arial,sans-serif;
-                         font-size:12px;color:#2ecc71;font-weight:bold;
-                         text-align:right;">{n_contato_descoberto}</td>
+              <td class="sumario-td-l"><span style="color:#2ecc71;font-size:11px;">Contato descoberto</span></td>
+              <td class="sumario-td-r" style="color:#2ecc71;">{n_contato_descoberto}</td>
             </tr>'''
 
     # Bloco de erros
     erros_html = ""
     if erros:
-        items = "".join(
-            f'<li style="margin-bottom:3px;">{err}</li>'
-            for err in erros
-        )
+        items = "".join(f'<li style="margin-bottom:3px;">{err}</li>' for err in erros)
         erros_html = f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0"
-               style="margin-top:20px;background:#1a1a0d;border:1px solid #3a3a1a;
-                      border-radius:8px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" class="avisos">
           <tr>
-            <td style="padding:12px 16px;">
-              <div style="color:#b7950b;font-size:11px;font-weight:bold;
-                          text-transform:uppercase;letter-spacing:0.5px;
-                          margin-bottom:8px;font-family:Arial,sans-serif;">
-                Avisos do sistema
-              </div>
-              <ul style="color:#7d6608;font-size:12px;margin:0;
-                         padding-left:16px;line-height:1.7;
-                         font-family:Arial,sans-serif;">
-                {items}
-              </ul>
+            <td class="avisos-td">
+              <div class="avisos-lbl">Avisos do sistema</div>
+              <ul class="avisos-ul">{items}</ul>
             </td>
           </tr>
         </table>'''
@@ -418,104 +444,62 @@ def gerar_html_email(
     # Indicador de parte
     parte_html = ""
     if total_partes > 1:
-        parte_html = f'''
-        <div style="text-align:center;color:#4a6a8a;font-size:12px;
-                    margin-bottom:16px;font-family:Arial,sans-serif;">
-          Parte {parte} de {total_partes}
-        </div>'''
+        parte_html = f'<div style="text-align:center;color:#4a6a8a;font-size:12px;margin-bottom:16px;font-family:Arial,sans-serif;">Parte {parte} de {total_partes}</div>'
 
-    # Conteúdo quando não há vagas
+    # Corpo
     if not vagas:
         corpo = '''
-        <div style="text-align:center;padding:48px 24px;">
-          <div style="font-size:36px;margin-bottom:14px;">🔍</div>
-          <div style="color:#8fa8c0;font-size:15px;font-weight:bold;
-                      margin-bottom:8px;font-family:Arial,sans-serif;">
-            Nenhuma vaga nova hoje
-          </div>
-          <div style="color:#4a6a8a;font-size:12px;font-family:Arial,sans-serif;">
-            Pares monitorados: PT ↔ EN &nbsp;·&nbsp; PT ↔ ES &nbsp;·&nbsp; EN ↔ ES
-          </div>
-        </div>'''
+        <td class="vazio-td">
+          <div class="vazio-icon">&#128269;</div>
+          <div class="vazio-title">Nenhuma vaga nova hoje</div>
+          <div class="vazio-sub">Pares monitorados: PT &#8596; EN &nbsp;&#183;&nbsp; PT &#8596; ES &nbsp;&#183;&nbsp; EN &#8596; ES</div>
+        </td>'''
     else:
         corpo = f'''
-        <!-- SUMÁRIO -->
-        <table width="100%" cellpadding="0" cellspacing="0" border="0"
-               style="background:#0d1b2a;border-radius:8px;margin-bottom:20px;
-                      overflow:hidden;border:1px solid #1e3a52;">
-          <tr>
-            <td colspan="2" style="padding:8px 12px 6px 12px;
-                                   border-bottom:1px solid #1e3a52;">
-              <span style="color:#7f8fa6;font-size:10px;font-weight:bold;
-                           letter-spacing:1px;text-transform:uppercase;
-                           font-family:Arial,sans-serif;">Resumo por fonte</span>
-            </td>
-          </tr>
-          {resumo_rows}
-          <tr style="border-top:1px solid #1e3a52;">
-            <td style="padding:8px 12px;font-family:Arial,sans-serif;
-                       font-size:12px;color:#7f8fa6;font-weight:bold;">
-              Total de vagas novas
-            </td>
-            <td style="padding:8px 12px;font-family:Arial,sans-serif;
-                       font-size:15px;color:#ffffff;font-weight:bold;
-                       text-align:right;">{total}</td>
-          </tr>
-        </table>
-        {parte_html}
-        <!-- VAGAS -->
-        {secoes_html}
-        {erros_html}'''
+        <td class="body-td">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" class="sumario">
+            <tr><td colspan="2" class="sumario-hdr">
+              <span class="sumario-lbl">Resumo por fonte</span>
+            </td></tr>
+            {resumo_rows}
+            <tr class="sumario-sep">
+              <td class="sumario-total-l">Total de vagas novas</td>
+              <td class="sumario-total-r">{total}</td>
+            </tr>
+          </table>
+          {parte_html}
+          {secoes_html}
+          {erros_html}
+        </td>'''
 
     return f'''<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Alerta de Vagas de Tradução — {hoje}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Alerta de Vagas de Tradu&#231;&#227;o &#8212; {hoje}</title>
+  <style>{CSS_GLOBAL}</style>
 </head>
-<body style="margin:0;padding:0;background-color:#0d1b2a;">
-
-  <table width="100%" cellpadding="0" cellspacing="0" border="0"
-         style="background:#0d1b2a;padding:24px 0;">
+<body>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" class="wrap">
     <tr>
       <td align="center">
-        <table width="640" cellpadding="0" cellspacing="0" border="0"
-               style="max-width:640px;width:100%;">
+        <table width="640" cellpadding="0" cellspacing="0" border="0" class="inner">
 
           <!-- HEADER -->
           <tr>
-            <td style="background:linear-gradient(135deg,#0a2540 0%,#1a3a5c 70%,#0d2d4a 100%);
-                       border-radius:12px 12px 0 0;padding:28px 28px 22px 28px;">
+            <td class="hdr">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td>
-                    <div style="color:#5dade2;font-size:10px;font-weight:bold;
-                                letter-spacing:2px;text-transform:uppercase;
-                                font-family:Arial,sans-serif;margin-bottom:6px;">
-                      ALERTA DIÁRIO · TRADUÇÃO
-                    </div>
-                    <div style="color:#ffffff;font-size:24px;font-weight:bold;
-                                font-family:Arial,sans-serif;line-height:1.2;">
-                      Vagas de Tradução
-                    </div>
-                    <div style="color:#7fa8c8;font-size:12px;
-                                font-family:Arial,sans-serif;margin-top:4px;">
-                      PT · EN · ES — {hoje}
-                    </div>
+                    <div class="hdr-label">ALERTA DI&#193;RIO &middot; TRADU&#199;&#195;O</div>
+                    <div class="hdr-title">Vagas de Tradu&#231;&#227;o</div>
+                    <div class="hdr-sub">PT &middot; EN &middot; ES &#8212; {hoje}</div>
                   </td>
                   <td align="right" valign="top">
-                    <div style="background:#0a2540;border:2px solid #2e86c1;
-                                border-radius:10px;padding:10px 16px;text-align:center;">
-                      <div style="color:#5dade2;font-size:28px;font-weight:900;
-                                  font-family:Arial,sans-serif;line-height:1;">
-                        {total}
-                      </div>
-                      <div style="color:#4a6a8a;font-size:10px;
-                                  text-transform:uppercase;letter-spacing:0.5px;
-                                  font-family:Arial,sans-serif;">
-                        nova{"s" if total != 1 else ""}
-                      </div>
+                    <div class="hdr-count-box">
+                      <div class="hdr-count-n">{total}</div>
+                      <div class="hdr-count-lbl">nova{"s" if total != 1 else ""}</div>
                     </div>
                   </td>
                 </tr>
@@ -524,25 +508,18 @@ def gerar_html_email(
           </tr>
 
           <!-- CORPO -->
-          <tr>
-            <td style="background:#162535;padding:22px 28px;
-                       border-left:1px solid #1e3a52;border-right:1px solid #1e3a52;">
-              {corpo}
-            </td>
-          </tr>
+          <tr>{corpo}</tr>
 
           <!-- FOOTER -->
           <tr>
-            <td style="background:#0a1a2a;border-radius:0 0 12px 12px;
-                       padding:18px 28px;border:1px solid #1e3a52;border-top:none;">
-              <div style="color:#3d5a73;font-size:11px;
-                          font-family:Arial,sans-serif;line-height:1.7;">
-                <strong style="color:#4a6a8a;">Hudson Borges</strong>
-                &nbsp;·&nbsp; Sistema de Alertas de Tradução<br>
-                Fontes: ProZ.com &nbsp;·&nbsp; Translators Café
-                &nbsp;·&nbsp; Translation Directory<br>
-                Pares: PT ↔ EN &nbsp;·&nbsp; PT ↔ ES &nbsp;·&nbsp; EN ↔ ES<br>
-                <span style="color:#27ae60;">✉ Contatos diretos descobertos automaticamente via busca reversa</span>
+            <td class="ftr">
+              <div class="ftr-txt">
+                <strong class="ftr-name">Hudson Borges</strong>
+                &nbsp;&middot;&nbsp; Sistema de Alertas de Tradu&#231;&#227;o<br>
+                Fontes: ProZ.com &nbsp;&middot;&nbsp; Translators Caf&#233;
+                &nbsp;&middot;&nbsp; Translation Directory<br>
+                Pares: PT &#8596; EN &nbsp;&middot;&nbsp; PT &#8596; ES &nbsp;&middot;&nbsp; EN &#8596; ES<br>
+                <span class="ftr-green">&#9993; Contatos diretos descobertos automaticamente via busca reversa</span>
               </div>
             </td>
           </tr>
@@ -551,7 +528,6 @@ def gerar_html_email(
       </td>
     </tr>
   </table>
-
 </body>
 </html>'''
 
@@ -560,20 +536,20 @@ def gerar_payloads_email(
     vagas: List[Dict],
     erros: List[str],
     destinatario: str,
-    max_por_email: int = 50,
+    max_por_email: int = 200,
 ) -> List[Dict]:
     """
     Gera lista de payloads para o Gmail MCP.
-    Divide em múltiplos emails se houver mais de max_por_email vagas.
+    Com o template otimizado (CSS em classes), o HTML de 63 vagas fica ~80KB,
+    dentro do limite do manus-mcp-cli. Não é mais necessário dividir em partes.
     """
     hoje = date.today().strftime("%d/%m/%Y")
     total = len(vagas)
 
     if total == 0:
-        assunto = f"[Tradução] Nenhuma vaga nova — {hoje}"
+        assunto = f"[Tradu\u00e7\u00e3o] Nenhuma vaga nova \u2014 {hoje}"
         html = gerar_html_email([], erros)
-        return [{"messages": [{"to": destinatario, "subject": assunto,
-                               "content": html, "content_type": "html"}]}]
+        return [{"messages": [{"to": [destinatario], "subject": assunto, "content": html}]}]
 
     lotes = [vagas[i:i + max_por_email] for i in range(0, total, max_por_email)]
     total_partes = len(lotes)
@@ -581,18 +557,12 @@ def gerar_payloads_email(
 
     for idx, lote in enumerate(lotes, 1):
         if total_partes == 1:
-            assunto = f"[Tradução] {total} nova(s) vaga(s) — {hoje}"
+            assunto = f"[Tradu\u00e7\u00e3o] {total} nova(s) vaga(s) \u2014 {hoje}"
         else:
-            assunto = f"[Tradução] {total} nova(s) vaga(s) — {hoje} ({idx}/{total_partes})"
+            assunto = f"[Tradu\u00e7\u00e3o] {total} nova(s) vaga(s) \u2014 {hoje} ({idx}/{total_partes})"
 
-        html = gerar_html_email(
-            lote,
-            erros if idx == 1 else [],
-            parte=idx,
-            total_partes=total_partes,
-        )
-        payloads.append({"messages": [{"to": destinatario, "subject": assunto,
-                                       "content": html, "content_type": "html"}]})
+        html = gerar_html_email(lote, erros if idx == 1 else [], parte=idx, total_partes=total_partes)
+        payloads.append({"messages": [{"to": [destinatario], "subject": assunto, "content": html}]})
 
     return payloads
 
@@ -603,7 +573,7 @@ if __name__ == "__main__":
         {
             "titulo": "English to Brazilian Portuguese Freelance Translators Needed",
             "idioma_origem": "EN", "idioma_destino": "PT",
-            "par_display": "EN → PT",
+            "par_display": "EN \u2192 PT",
             "area": "Technical, IT",
             "contagem_palavras": "5.000",
             "formato": "Microsoft Word",
@@ -616,62 +586,61 @@ if __name__ == "__main__":
             "link_contato": "https://www.translationdirectory.com/job_00078905.php",
             "link_vaga": "https://www.translationdirectory.com/job_00078905.php",
             "fonte": "Translation Directory",
-            "detalhes": "Our company, a world leader in translations, specialising in TV programme information. We are currently recruiting freelance translators. Native speakers only. Flexible working conditions.",
+            "detalhes": "Our company, a world leader in translations, specialising in TV programme information. We are currently recruiting freelance translators. Native speakers only.",
             "contato_pessoa": "John Smith",
             "contato_descoberto": {
                 "email": "info@globaltv-translations.com",
                 "site": "https://www.globaltv-translations.com",
-                "fonte_busca": "página de contato",
+                "fonte_busca": "p\u00e1gina de contato",
             },
         },
         {
-            "titulo": "Simultaneous Interpreters Needed EN/PT/ES – Rio de Janeiro",
+            "titulo": "Simultaneous Interpreters Needed EN/PT/ES",
             "idioma_origem": "EN", "idioma_destino": "PT",
-            "par_display": "EN → PT | PT → ES",
-            "area": "General",
+            "par_display": "EN \u2192 PT",
+            "area": "Legal",
+            "contagem_palavras": "",
+            "formato": "",
+            "preco_palavra": "0.18 USD per word",
+            "pais": "Brazil",
+            "empresa": "Skrivanek Brasil",
+            "prazo": "15/04/2026",
+            "data_publicacao": "18/03/2026",
+            "tipo_contato": "email",
+            "link_contato": "info@skrivanek.com",
+            "link_vaga": "https://www.translatorscafe.com/cafe/SelectedJob.asp?Job=374422",
+            "fonte": "Translators Caf\u00e9",
+            "detalhes": "We need experienced simultaneous interpreters for a legal conference.",
+            "contato_pessoa": "Maria Silva",
+            "contato_descoberto": {},
+        },
+        {
+            "titulo": "Voice Over Directors and Transcreators based in Canada",
+            "idioma_origem": "EN", "idioma_destino": "ES",
+            "par_display": "EN \u2192 ES",
+            "area": "Government / Politics",
             "contagem_palavras": "",
             "formato": "",
             "preco_palavra": "",
-            "pais": "Brazil",
-            "empresa": "Skrivanek",
-            "prazo": "30/03/2026",
+            "pais": "",
+            "empresa": "",
+            "prazo": "01/04/2026",
             "data_publicacao": "18/03/2026",
-            "tipo_contato": "Translators Café",
-            "link_contato": "https://www.translatorscafe.com/cafe/SelectedJob.asp?Job=123456",
-            "link_vaga": "https://www.translatorscafe.com/cafe/SelectedJob.asp?Job=123456",
-            "fonte": "Translators Café",
-            "detalhes": "We are looking for experienced simultaneous interpreters for a 3-day international conference in Rio de Janeiro.",
+            "tipo_contato": "URL",
+            "link_contato": "https://www.proz.com/translation-jobs/2231906",
+            "link_vaga": "https://www.proz.com/translation-jobs/2231906",
+            "fonte": "ProZ.com",
+            "detalhes": "We are looking for voice over directors and transcreators based in Canada.",
             "contato_pessoa": "",
             "contato_descoberto": {
-                "email": "info@skrivanek.com",
-                "site": "https://skrivanek.com",
+                "site": "https://www.proz.com",
                 "fonte_busca": "homepage",
             },
         },
-        {
-            "titulo": "Spanish to English Legal Document Translation – Urgent",
-            "idioma_origem": "ES", "idioma_destino": "EN",
-            "par_display": "ES → EN",
-            "area": "Legal",
-            "contagem_palavras": "12.000",
-            "formato": "PDF",
-            "preco_palavra": "0.10 USD per word",
-            "pais": "USA",
-            "empresa": "LegalDocs Inc.",
-            "prazo": "25/03/2026",
-            "data_publicacao": "16/03/2026",
-            "tipo_contato": "email",
-            "link_contato": "jobs@legaldocs.com",
-            "link_vaga": "https://www.proz.com/translation-jobs/9999999",
-            "fonte": "ProZ.com",
-            "detalhes": "Legal contracts and agreements. Certified translation required. Urgent delivery.",
-            "contato_pessoa": "Maria Garcia",
-            "contato_descoberto": {},
-        },
     ]
-    erros_teste = ["Translators Café: acesso bloqueado (403) — IP do servidor bloqueado pelo TC"]
-
-    html = gerar_html_email(vagas_teste, erros_teste)
-    with open("/tmp/email_preview.html", "w", encoding="utf-8") as f:
+    html = gerar_html_email(vagas_teste, [])
+    with open("/tmp/email_preview_v2.html", "w", encoding="utf-8") as f:
         f.write(html)
-    print("Preview salvo em /tmp/email_preview.html")
+    size = len(html.encode("utf-8"))
+    print(f"Preview gerado: /tmp/email_preview_v2.html ({size//1024} KB)")
+    print(f"Redução estimada para 63 vagas: de ~307KB para ~{size * 21 // 1024}KB")
