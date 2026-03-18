@@ -25,10 +25,18 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
 TIMEOUT = 25
 SLEEP = 0.6
@@ -258,7 +266,15 @@ def _tc_fazer_login(session: requests.Session) -> bool:
     """
     try:
         # Passo 1: GET para obter cookies de sessão e o campo RedirectionString
-        resp = session.get(TC_LOGIN_URL, headers=HEADERS, timeout=TIMEOUT)
+        resp = session.get(
+            TC_LOGIN_URL,
+            headers=HEADERS,
+            timeout=TIMEOUT,
+            allow_redirects=True,
+        )
+        if resp.status_code == 403:
+            logger.warning("Translators Café: acesso negado (403) na página de login")
+            return False
         resp.raise_for_status()
 
         from bs4 import BeautifulSoup as _BS
@@ -274,18 +290,27 @@ def _tc_fazer_login(session: requests.Session) -> bool:
             "Password": TC_PASSWORD,
             "AutoLogin": "on",
         }
+        time.sleep(1.5)  # Pausa para simular comportamento humano
         resp2 = session.post(
             TC_LOGIN_URL,
             data=login_data,
-            headers={**HEADERS, "Referer": TC_LOGIN_URL},
+            headers={
+                **HEADERS,
+                "Referer": TC_LOGIN_URL,
+                "Origin": "https://www.translatorscafe.com",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
             timeout=TIMEOUT,
             allow_redirects=True,
         )
 
         # Verifica se o login foi bem-sucedido
-        if "Hudson Borges" in resp2.text or "quicklook" in resp2.url or "My Caf" in resp2.text:
+        if "Hudson Borges" in resp2.text or "quicklook" in resp2.url or "My Caf" in resp2.text or "Logout" in resp2.text:
             logger.info("Translators Café: login realizado com sucesso")
             return True
+        elif resp2.status_code == 403:
+            logger.warning("Translators Café: acesso negado (403) após POST de login")
+            return False
         else:
             logger.warning("Translators Café: login pode ter falhado — verificar credenciais")
             return False
@@ -309,8 +334,8 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
     # Fazer login
     logado = _tc_fazer_login(session)
     if not logado:
-        erros.append("Translators Café: falha no login — verificar credenciais")
-        # Tenta mesmo assim (dados públicos)
+        erros.append("Translators Café: falha no login — tentando acesso público")
+        # Tenta mesmo assim com dados públicos (sem login)
 
     seen_ids: set = set()
 
@@ -324,6 +349,9 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
 
         try:
             resp = session.get(url, headers={**HEADERS, "Referer": TC_JOBS_URL}, timeout=TIMEOUT)
+            if resp.status_code == 403:
+                erros.append(f"Translators Café página {page}: acesso bloqueado (403) — IP do servidor pode estar na lista de bloqueio do TC")
+                break
             resp.raise_for_status()
         except Exception as exc:
             erros.append(f"Translators Café página {page}: erro — {exc}")
