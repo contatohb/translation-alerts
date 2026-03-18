@@ -3,19 +3,20 @@
 Alerta diário de novas vagas de tradução.
 
 Executa o monitor_traducao.py, filtra apenas vagas NOVAS
-(não alertadas antes) e envia email detalhado via Gmail MCP.
+(não alertadas antes), salva o email em arquivo JSON para
+envio posterior via Gmail MCP diretamente pelo shell.
 
 Uso:
-    python3 alerta_traducao.py [--force-send]
+    python3 alerta_traducao.py
+    # O email será salvo em /tmp/traducao_email_payload.json
+    # e o assunto em /tmp/traducao_email_subject.txt
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import subprocess
 import sys
-import tempfile
 from datetime import date
 from typing import Dict, List
 
@@ -38,8 +39,10 @@ try:
 except Exception:
     pass
 
-RECIPIENT = os.getenv("MONITOR_RECIPIENT", "huddsong@gmail.com")
-SEEN_PATH = os.path.join(_PROJECT_DIR, "data", "traducao_seen.json")
+RECIPIENT    = os.getenv("MONITOR_RECIPIENT", "huddsong@gmail.com")
+SEEN_PATH    = os.path.join(_PROJECT_DIR, "data", "traducao_seen.json")
+PAYLOAD_PATH = "/tmp/traducao_email_payload.json"
+SUBJECT_PATH = "/tmp/traducao_email_subject.txt"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -64,54 +67,12 @@ def save_seen(seen: dict, path: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Envio de email via Gmail MCP
-# ─────────────────────────────────────────────────────────────────
-
-def send_email(subject: str, body: str, recipient: str) -> bool:
-    payload = {
-        "messages": [{
-            "subject": subject,
-            "to": [recipient],
-            "content": body,
-        }]
-    }
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, encoding="utf-8"
-    )
-    json.dump(payload, tmp, ensure_ascii=False)
-    tmp.flush()
-    tmp.close()
-    try:
-        with open(tmp.name, "r", encoding="utf-8") as f:
-            input_str = f.read()
-        result = subprocess.run(
-            ["manus-mcp-cli", "tool", "call", "gmail_send_messages",
-             "--server", "gmail", "--input", input_str],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode == 0:
-            logger.info(f"Email enviado para {recipient}")
-            return True
-        else:
-            logger.error(f"Erro ao enviar email: {result.stderr[:300]}")
-            return False
-    except Exception as exc:
-        logger.error(f"Gmail MCP: {exc}")
-        return False
-    finally:
-        if os.path.exists(tmp.name):
-            os.remove(tmp.name)
-
-
-# ─────────────────────────────────────────────────────────────────
 # Principal
 # ─────────────────────────────────────────────────────────────────
 
 def main():
     import warnings
     warnings.filterwarnings("ignore")
-
-    force_send = "--force-send" in sys.argv
 
     hoje = date.today()
     logger.info(f"Alerta de vagas de tradução — {hoje.isoformat()}")
@@ -153,13 +114,23 @@ def main():
     else:
         assunto = f"[Tradução] Nenhuma vaga nova — {hoje.strftime('%d/%m/%Y')}"
 
-    # Enviar email se há novidades ou se forçado
-    if novas or force_send:
-        ok = send_email(assunto, corpo, RECIPIENT)
-        return 0 if ok else 1
-    else:
-        logger.info("Sem novidades — email não enviado (use --force-send para forçar)")
-        return 0
+    # Salvar payload do email em arquivo para envio via Gmail MCP
+    payload = {
+        "messages": [{
+            "subject": assunto,
+            "to": [RECIPIENT],
+            "content": corpo,
+        }]
+    }
+    with open(PAYLOAD_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+    with open(SUBJECT_PATH, "w", encoding="utf-8") as f:
+        f.write(assunto)
+
+    logger.info(f"Payload do email salvo em: {PAYLOAD_PATH}")
+    logger.info(f"Assunto: {assunto}")
+    return 0
 
 
 if __name__ == "__main__":

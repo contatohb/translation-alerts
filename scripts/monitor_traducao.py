@@ -184,6 +184,8 @@ def _par_relevante(origem: str, destino: str) -> bool:
 def _scrape_proz() -> Tuple[List[Dict], List[str]]:
     """
     Faz scraping da página pública de vagas do ProZ.com.
+    O par de idiomas está no div.flex-row ao redor do link, no formato
+    'Título | English to Spanish | Área | Posted March 18'.
     Retorna (lista_vagas, lista_erros).
     """
     vagas: List[Dict] = []
@@ -198,37 +200,77 @@ def _scrape_proz() -> Tuple[List[Dict], List[str]]:
         return vagas, erros
 
     soup = BeautifulSoup(resp.content, "html.parser")
-    all_links = soup.find_all("a")
     seen_urls: set = set()
 
-    for link in all_links:
-        titulo = link.get_text(strip=True)
+    # Cada vaga está dentro de um div.flex-row que contém:
+    # Título | Par de idiomas | Área | Posted DATE
+    for link in soup.find_all("a", href=True):
         href = link.get("href", "")
+        titulo = link.get_text(strip=True)
 
         if not titulo or len(titulo) < 8:
             continue
-        if not re.search(r'(translation-jobs|language-jobs)/\d+', href):
+        if not re.search(r'proz\.com/translation-jobs/\d+', href):
             continue
 
         # Monta URL completa
-        if href.startswith("http"):
-            job_url = href
-        else:
-            job_url = f"https://www.proz.com{href}"
+        job_url = href if href.startswith("http") else f"https://www.proz.com{href}"
 
         if job_url in seen_urls:
             continue
         seen_urls.add(job_url)
 
-        # Extrai par de idiomas do título
-        origem, destino = _extrair_par_idiomas_titulo(titulo)
+        # Subir até o div.flex-row que contém o par de idiomas
+        flex_row = link.find_parent("div", class_=lambda c: c and "flex-row" in c)
+        if not flex_row:
+            # Tentar subir alguns níveis manualmente
+            p = link.parent
+            for _ in range(5):
+                if p and p.name == "div" and "flex-row" in " ".join(p.get("class", [])):
+                    flex_row = p
+                    break
+                p = p.parent if p else None
+
+        # Extrair o texto completo do container para obter o par de idiomas
+        contexto_completo = ""
+        if flex_row:
+            contexto_completo = flex_row.get_text(separator=" | ", strip=True)
+        else:
+            # Fallback: usar o elemento pai imediato
+            pai = link.find_parent()
+            contexto_completo = pai.get_text(separator=" | ", strip=True) if pai else titulo
+
+        # O par de idiomas aparece no formato 'English to Spanish' ou 'English > Spanish'
+        # no texto do container, tipicamente após o título
+        origem, destino = "", ""
+
+        # Estrategia 1: Extrair do contexto completo (mais confiável)
+        m = re.search(
+            r'(Portuguese|English|Spanish|Portugu[eê]s|Ingl[eê]s|Espanhol|Espa[nñ]ol)'
+            r'\s+(?:to|into|>|\u2192)\s+'
+            r'(Portuguese|English|Spanish|Portugu[eê]s|Ingl[eê]s|Espanhol|Espa[nñ]ol)',
+            contexto_completo, re.IGNORECASE
+        )
+        if m:
+            origem = _normalizar_idioma(m.group(1))
+            destino = _normalizar_idioma(m.group(2))
+
+        # Estrategia 2: Abreviacoes no contexto (EN-PT, PT>ES, etc.)
+        if not _par_relevante(origem, destino):
+            m2 = re.search(r'\b(en|pt|es)\s*[-–>]\s*(en|pt|es)\b', contexto_completo, re.IGNORECASE)
+            if m2:
+                origem = _normalizar_idioma(m2.group(1))
+                destino = _normalizar_idioma(m2.group(2))
+
+        # Estrategia 3: Fallback no título
+        if not _par_relevante(origem, destino):
+            origem, destino = _extrair_par_idiomas_titulo(titulo)
+
         if not _par_relevante(origem, destino):
             continue
 
-        # Extrai contexto da vaga (elemento pai)
-        pai = link.find_parent()
-        contexto = pai.get_text(separator=" ", strip=True) if pai else ""
-
+        # Extrair campos adicionais do contexto
+        contexto = contexto_completo
         contagem_palavras = _extrair_contagem_palavras(contexto)
         formato = _extrair_formato(contexto)
         prazo = _extrair_prazo(contexto)
