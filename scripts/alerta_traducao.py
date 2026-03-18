@@ -2,9 +2,17 @@
 """
 Alerta diário de novas vagas de tradução.
 
-Executa o monitor_traducao.py, filtra apenas vagas NOVAS
-(não alertadas antes), gera email HTML premium, converte para PDF
-e envia via Gmail MCP (corpo texto + PDF anexo).
+Fluxo:
+  1. Busca vagas nas três fontes (ProZ, TC, TD)
+  2. Filtra apenas vagas NOVAS (não alertadas antes via seen.json)
+  3. Gera HTML premium com design dark mode
+  4. Converte HTML → PDF via Chromium headless
+  5. Faz upload do PDF para o Google Drive (link público)
+  6. Envia email via Gmail MCP: corpo texto compacto + link do Drive
+
+O link do Drive é permanente e funciona tanto no agendamento diário
+quanto em execuções manuais. O token OAuth do Drive é injetado pelo
+ambiente do Manus Schedule via GOOGLE_DRIVE_TOKEN.
 
 Uso:
     python3 alerta_traducao.py
@@ -14,13 +22,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
-import tempfile
 from collections import Counter
 from datetime import date
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,10 +49,10 @@ except Exception:
 
 RECIPIENT    = os.getenv("MONITOR_RECIPIENT", "huddsong@gmail.com")
 SEEN_PATH    = os.path.join(_PROJECT_DIR, "data", "traducao_seen.json")
-PAYLOAD_PATH = "/tmp/traducao_email_payload.json"
-SUBJECT_PATH = "/tmp/traducao_email_subject.txt"
 HTML_PATH    = "/tmp/traducao_email.html"
 PDF_PATH     = "/tmp/traducao_email.pdf"
+PAYLOAD_PATH = "/tmp/traducao_email_payload.json"
+SUBJECT_PATH = "/tmp/traducao_email_subject.txt"
 
 MAX_VAGAS_POR_EMAIL = 200  # Todas as vagas em um único email
 
@@ -73,10 +79,135 @@ def save_seen(seen: dict, path: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────
+# Geração do PDF via Chromium headless
+# ─────────────────────────────────────────────────────────────────
+
+def gerar_pdf_chromium(html_path: str, pdf_path: str) -> bool:
+    """
+    Converte HTML → PDF usando Chromium headless.
+    Renderiza o design completo (dark mode, CSS, etc.).
+    Retorna True se o PDF foi gerado com sucesso.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "chromium-browser",
+                "--headless",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                f"--print-to-pdf={pdf_path}",
+                "--print-to-pdf-no-header",
+                f"file://{html_path}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+            logger.info(f"PDF gerado: {os.path.getsize(pdf_path):,} bytes")
+            return True
+        else:
+            logger.warning(f"Chromium falhou: {result.stderr[-300:]}")
+            return False
+    except Exception as e:
+        logger.warning(f"Erro ao gerar PDF com Chromium: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────
+# Upload para o Google Drive
+# ─────────────────────────────────────────────────────────────────
+
+def upload_para_drive(pdf_path: str, nome_arquivo: str) -> Optional[str]:
+    """
+    Faz upload do PDF para o Google Drive e retorna o link público.
+    Usa o token OAuth injetado pelo ambiente (GOOGLE_DRIVE_TOKEN).
+    Retorna None se falhar.
+    """
+    try:
+        import requests as req
+    except ImportError:
+        logger.error("requests não instalado")
+        return None
+
+    token = os.environ.get("GOOGLE_DRIVE_TOKEN") or os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN")
+    if not token:
+        logger.warning("Token do Google Drive não encontrado — pulando upload")
+        return None
+
+    logger.info("Fazendo upload do PDF para o Google Drive...")
+
+    # Metadados do arquivo
+    metadata = {"name": nome_arquivo, "mimeType": "application/pdf"}
+
+    with open(pdf_path, "rb") as f:
+        pdf_data = f.read()
+
+    # Upload multipart
+    boundary = "-------314159265358979323846"
+    delimiter = f"\r\n--{boundary}\r\n"
+    close_delim = f"\r\n--{boundary}--"
+
+    body = (
+        delimiter
+        + "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        + json.dumps(metadata)
+        + delimiter
+        + "Content-Type: application/pdf\r\n\r\n"
+    ).encode("utf-8") + pdf_data + close_delim.encode("utf-8")
+
+    try:
+        resp = req.post(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": f'multipart/related; boundary="{boundary}"',
+            },
+            data=body,
+            timeout=120,
+        )
+    except Exception as e:
+        logger.error(f"Erro no upload para o Drive: {e}")
+        return None
+
+    if resp.status_code != 200:
+        logger.error(f"Upload falhou ({resp.status_code}): {resp.text[:200]}")
+        return None
+
+    file_id = resp.json().get("id")
+    if not file_id:
+        logger.error("File ID não retornado pelo Drive")
+        return None
+
+    logger.info(f"File ID: {file_id}")
+
+    # Tornar o arquivo público (qualquer pessoa com o link pode visualizar)
+    try:
+        perm_resp = req.post(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"role": "reader", "type": "anyone"},
+            timeout=30,
+        )
+        if perm_resp.status_code not in (200, 201):
+            logger.warning(f"Não foi possível tornar o arquivo público: {perm_resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Erro ao definir permissão: {e}")
+
+    link = f"https://drive.google.com/file/d/{file_id}/view"
+    logger.info(f"Link do Drive: {link}")
+    return link
+
+
+# ─────────────────────────────────────────────────────────────────
 # Geração do corpo de texto do email (compacto para MCP)
 # ─────────────────────────────────────────────────────────────────
 
-def gerar_corpo_texto(vagas: List[Dict], erros: List[str]) -> str:
+def gerar_corpo_texto(vagas: List[Dict], erros: List[str], pdf_link: Optional[str]) -> str:
     """Gera corpo de texto simples para o email (cabeçalho + lista de vagas)."""
     hoje = date.today().strftime("%d/%m/%Y")
     total = len(vagas)
@@ -111,10 +242,13 @@ def gerar_corpo_texto(vagas: List[Dict], erros: List[str]) -> str:
     if n_site:
         linhas.append(f"  Site encontrado (busca reversa): {n_site}")
     linhas.append("")
-    linhas.append("O relatório completo com todos os campos, descrições e links")
-    linhas.append("está no arquivo PDF anexo.")
-    linhas.append("")
-    linhas.append("─" * 60)
+
+    if pdf_link:
+        linhas.append("RELATÓRIO COMPLETO (design premium, todos os campos, links de candidatura):")
+        linhas.append(pdf_link)
+        linhas.append("")
+
+    linhas.append("-" * 60)
     linhas.append("LISTA DE VAGAS:")
     linhas.append("")
 
@@ -129,7 +263,6 @@ def gerar_corpo_texto(vagas: List[Dict], erros: List[str]) -> str:
             linhas.append(f"   Prazo: {v['prazo']}")
         if v.get("preco_palavra"):
             linhas.append(f"   Preço/palavra: {v['preco_palavra']}")
-        # Contato
         cd = v.get("contato_descoberto", {})
         if v.get("tipo_contato") == "email" and "@" in v.get("link_contato", ""):
             linhas.append(f"   Email: {v['link_contato']}")
@@ -142,7 +275,7 @@ def gerar_corpo_texto(vagas: List[Dict], erros: List[str]) -> str:
         linhas.append("")
 
     if erros:
-        linhas.append("─" * 60)
+        linhas.append("-" * 60)
         linhas.append("AVISOS DO SISTEMA:")
         for err in erros:
             linhas.append(f"  - {err}")
@@ -151,13 +284,13 @@ def gerar_corpo_texto(vagas: List[Dict], erros: List[str]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Envio via Gmail MCP (corpo texto + PDF anexo)
+# Envio via Gmail MCP
 # ─────────────────────────────────────────────────────────────────
 
-def enviar_via_mcp(assunto: str, corpo: str, pdf_path: str) -> bool:
+def enviar_via_mcp(assunto: str, corpo: str) -> bool:
     """
-    Envia o email via manus-mcp-cli.
-    Usa corpo de texto simples (compacto) + PDF como anexo.
+    Envia o email via manus-mcp-cli (Gmail MCP).
+    O corpo de texto é compacto (<20KB) para não exceder o limite do shell.
     Retorna True se enviado com sucesso.
     """
     payload = {
@@ -165,12 +298,11 @@ def enviar_via_mcp(assunto: str, corpo: str, pdf_path: str) -> bool:
             "to": [RECIPIENT],
             "subject": assunto,
             "content": corpo,
-            "attachments": [pdf_path] if os.path.exists(pdf_path) else [],
         }]
     }
 
     payload_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    logger.info(f"Payload MCP: {len(payload_str)} chars")
+    logger.info(f"Payload MCP: {len(payload_str.encode('utf-8'))//1024} KB")
 
     try:
         result = subprocess.run(
@@ -185,19 +317,6 @@ def enviar_via_mcp(assunto: str, corpo: str, pdf_path: str) -> bool:
             logger.error(f"Erro no envio: {result.stderr[:500]}")
             return False
     except OSError as e:
-        if "Argument list too long" in str(e):
-            logger.error("Payload muito grande para o shell — tentando sem PDF...")
-            # Fallback: enviar só o texto sem PDF
-            payload["messages"][0]["attachments"] = []
-            payload_str2 = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            result2 = subprocess.run(
-                ["manus-mcp-cli", "tool", "call", "gmail_send_messages",
-                 "--server", "gmail", "--input", payload_str2],
-                capture_output=True, text=True, timeout=120
-            )
-            if result2.returncode == 0:
-                logger.info("Email enviado (sem PDF) via Gmail MCP")
-                return True
         logger.error(f"Erro ao executar manus-mcp-cli: {e}")
         return False
     except subprocess.TimeoutExpired:
@@ -246,8 +365,10 @@ def main():
         assunto = f"[Tradução] {len(novas)} nova(s) vaga(s) — {date_str}"
     else:
         assunto = f"[Tradução] Nenhuma vaga nova — {date_str}"
+        logger.info("Nenhuma vaga nova — email não enviado")
+        return 0
 
-    # Gerar HTML premium (para o PDF)
+    # Gerar HTML premium
     logger.info("Gerando HTML premium...")
     payloads = gerar_payloads_email(
         vagas=novas,
@@ -257,47 +378,32 @@ def main():
     )
     html = payloads[0]["messages"][0]["content"]
 
-    # Salvar HTML
     with open(HTML_PATH, "w", encoding="utf-8") as f:
         f.write(html)
-    logger.info(f"HTML salvo: {len(html)} chars")
+    logger.info(f"HTML salvo: {len(html):,} chars")
 
-    # Converter HTML → PDF
-    pdf_ok = False
-    try:
-        result = subprocess.run(
-            ["manus-md-to-pdf", HTML_PATH, PDF_PATH],
-            capture_output=True, text=True, timeout=120
-        )
-        if os.path.exists(PDF_PATH) and os.path.getsize(PDF_PATH) > 0:
-            pdf_ok = True
-            logger.info(f"PDF gerado: {os.path.getsize(PDF_PATH):,} bytes")
-        else:
-            logger.warning("PDF não gerado ou vazio")
-    except Exception as e:
-        logger.warning(f"Erro ao gerar PDF: {e}")
+    # Converter HTML → PDF via Chromium headless
+    pdf_ok = gerar_pdf_chromium(HTML_PATH, PDF_PATH)
+
+    # Upload do PDF para o Google Drive
+    pdf_link = None
+    if pdf_ok:
+        nome_pdf = f"Vagas_Traducao_{hoje.strftime('%d-%m-%Y')}.pdf"
+        pdf_link = upload_para_drive(PDF_PATH, nome_pdf)
 
     # Gerar corpo de texto compacto
-    corpo = gerar_corpo_texto(novas, erros)
+    corpo = gerar_corpo_texto(novas, erros, pdf_link)
 
     # Salvar payload para referência
-    payload_ref = {
-        "messages": [{
-            "to": [RECIPIENT],
-            "subject": assunto,
-            "content": corpo,
-            "pdf_path": PDF_PATH if pdf_ok else None,
-        }]
-    }
     with open(PAYLOAD_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload_ref, f, ensure_ascii=False, indent=2)
+        json.dump({"subject": assunto, "pdf_link": pdf_link, "vagas": len(novas)}, f, ensure_ascii=False, indent=2)
     with open(SUBJECT_PATH, "w", encoding="utf-8") as f:
         f.write(assunto)
 
     logger.info(f"Assunto: {assunto}")
 
-    # Enviar email
-    enviado = enviar_via_mcp(assunto, corpo, PDF_PATH if pdf_ok else "")
+    # Enviar email via Gmail MCP
+    enviado = enviar_via_mcp(assunto, corpo)
     if enviado:
         logger.info("Alerta enviado com sucesso!")
     else:
