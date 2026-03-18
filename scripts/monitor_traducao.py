@@ -7,7 +7,7 @@ Combinações de idiomas monitoradas:
   - Português ↔ Espanhol (PT/ES, ES/PT)
   - Inglês    ↔ Espanhol (EN/ES, ES/EN)
 
-Cada vaga retornada contém:
+Cada vaga retornada contém (todos os campos em todas as fontes, quando disponíveis):
   titulo, idioma_origem, idioma_destino, par_display, area,
   contagem_palavras, formato, prazo, data_publicacao,
   tipo_contato, link_contato, link_vaga, fonte,
@@ -37,29 +37,27 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
     "Cache-Control": "max-age=0",
 }
 TIMEOUT = 25
-SLEEP = 0.6
+SLEEP   = 0.8
 
 # ─────────────────────────────────────────────────────────────────
 # Credenciais do Translators Café
 # ─────────────────────────────────────────────────────────────────
-TC_USERNAME = "hudsonborges"
-TC_PASSWORD = "Raios25_"
+TC_USERNAME  = "hudsonborges"
+TC_PASSWORD  = "Raios25_"
 TC_LOGIN_URL = "https://www.translatorscafe.com/cafe/login.asp"
 TC_JOBS_URL  = "https://www.translatorscafe.com/cafe/SearchJobs.asp"
+TC_BASE_URL  = "https://www.translatorscafe.com"
 
 # ─────────────────────────────────────────────────────────────────
 # Mapeamento de idiomas
 # ─────────────────────────────────────────────────────────────────
-
 LANGUAGE_MAP: Dict[str, str] = {
     "portuguese": "PT", "português": "PT", "portugues": "PT",
+    "brazilian portuguese": "PT", "portuguese (brazil)": "PT",
+    "portuguese (european)": "PT", "portuguese (portugal)": "PT",
     "english": "EN",
     "spanish": "ES", "español": "ES", "espanol": "ES",
     "latin american spanish": "ES", "castilian": "ES",
@@ -77,7 +75,6 @@ _ABBREV_MAP: Dict[str, str] = {
     "es": "ES", "es-la": "ES", "es(la)": "ES",
 }
 
-# Meses em inglês para conversão de datas
 _MESES_EN = {
     "january": 1, "february": 2, "march": 3, "april": 4,
     "may": 5, "june": 6, "july": 7, "august": 8,
@@ -86,10 +83,8 @@ _MESES_EN = {
     "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 
-# Dias da semana em inglês (para remover do início)
 _DIAS_EN = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
 
-# Emails de sistema a ignorar na busca reversa
 _EMAILS_IGNORAR = {
     "sentry", "example", "test", "noreply", "no-reply", "donotreply",
     "privacy", "gdpr", "w3.org", "schema.org", "google", "facebook",
@@ -98,20 +93,18 @@ _EMAILS_IGNORAR = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────
+# Utilitários gerais
+# ─────────────────────────────────────────────────────────────────
+
 def _formatar_data(texto: str) -> str:
-    """
-    Converte qualquer formato de data para dd/mm/aaaa.
-    Aceita: 'Tuesday, 17 Mar 2026, 12:55:34', '12/31/2026', 'March 18', 'March 18, 2026', etc.
-    Retorna string no formato dd/mm/aaaa ou o texto original se não conseguir parsear.
-    """
+    """Converte qualquer formato de data para dd/mm/aaaa."""
     if not texto:
         return ""
     t = texto.strip()
-
-    # Remover dia da semana do início: "Tuesday, 17 Mar 2026, ..."
     t_clean = re.sub(r'^(?:' + '|'.join(_DIAS_EN) + r'),?\s*', '', t, flags=re.IGNORECASE)
 
-    # Formato MM/DD/YYYY (americano) → dd/mm/aaaa
+    # MM/DD/YYYY americano
     m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})', t_clean)
     if m:
         mm, dd, yyyy = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -119,50 +112,44 @@ def _formatar_data(texto: str) -> str:
             dd, mm = mm, dd
         return f"{dd:02d}/{mm:02d}/{yyyy}"
 
-    # Formato "17 Mar 2026" ou "17 Mar 2026, 12:55:34"
+    # "17 Mar 2026"
     m = re.match(r'^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})', t_clean)
     if m:
-        dd = int(m.group(1))
-        mes_str = m.group(2).lower()[:3]
-        yyyy = int(m.group(3))
+        dd, mes_str, yyyy = int(m.group(1)), m.group(2).lower()[:3], int(m.group(3))
         mm = _MESES_EN.get(mes_str, 0)
         if mm:
             return f"{dd:02d}/{mm:02d}/{yyyy}"
 
-    # Formato "March 18, 2026" ou "March 18"
+    # "March 18, 2026" ou "March 18"
     m = re.match(r'^([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(?:at\s+\d+:\d+)?)?,?\s*(\d{4})?', t_clean)
     if m:
-        mes_str = m.group(1).lower()[:3]
-        dd = int(m.group(2))
+        mes_str, dd = m.group(1).lower()[:3], int(m.group(2))
         yyyy = int(m.group(3)) if m.group(3) else datetime.now().year
         mm = _MESES_EN.get(mes_str, 0)
         if mm:
             return f"{dd:02d}/{mm:02d}/{yyyy}"
 
-    # Formato DD/MM/YYYY já correto
+    # DD/MM/YYYY já correto
     m = re.match(r'^(\d{2})/(\d{2})/(\d{4})', t_clean)
     if m:
         return t_clean[:10]
 
-    return t  # Retorna original se não conseguir parsear
+    return t
 
 
 def _normalizar_idioma(texto: str) -> str:
-    """Converte nome de idioma para código de 2 letras (PT, EN, ES)."""
     if not texto:
         return ""
     t = texto.lower().strip()
     for chave, codigo in LANGUAGE_MAP.items():
         if t == chave or t.startswith(chave):
             return codigo
-    if len(t) <= 5:
-        if t in _ABBREV_MAP:
-            return _ABBREV_MAP[t]
+    if len(t) <= 5 and t in _ABBREV_MAP:
+        return _ABBREV_MAP[t]
     return ""
 
 
 def _extrair_par_idiomas_titulo(texto: str) -> Tuple[str, str]:
-    """Extrai par de idiomas de um texto de título."""
     if not texto:
         return "", ""
     t_lower = texto.lower()
@@ -174,10 +161,7 @@ def _extrair_par_idiomas_titulo(texto: str) -> Tuple[str, str]:
         if src and tgt and src != tgt:
             return src, tgt
 
-    m = re.search(
-        r'(\w+(?:\s+\w+)?)\s+(?:to|into|→|>)\s+(\w+(?:\s+\w+)?)',
-        texto, re.IGNORECASE
-    )
+    m = re.search(r'(\w+(?:\s+\w+)?)\s+(?:to|into|→|>)\s+(\w+(?:\s+\w+)?)', texto, re.IGNORECASE)
     if m:
         src = _normalizar_idioma(m.group(1))
         tgt = _normalizar_idioma(m.group(2))
@@ -203,7 +187,6 @@ def _extrair_par_idiomas_titulo(texto: str) -> Tuple[str, str]:
 
 
 def _parse_par_tc(lang_text: str) -> Tuple[str, str]:
-    """Analisa par de idiomas no formato do Translators Café: 'English>Spanish'."""
     m = re.match(r'^(.+?)>(.+)$', lang_text.strip())
     if m:
         src = _normalizar_idioma(m.group(1).strip())
@@ -234,26 +217,17 @@ def _extrair_formato(texto: str) -> str:
 
 
 def _extrair_prazo(texto: str) -> str:
-    # Padrão "April 11th at 16:50" ou "April 11" ou "Delivery date: April 11"
     m = re.search(
         r'(?:delivery\s+date|deadline|prazo|até|until|by|open\s+for)\s*:?\s*([A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+at\s+\d+:\d+)?(?:,?\s*\d{4})?)',
         texto, re.IGNORECASE
     )
     if m:
         return _formatar_data(m.group(1).strip())
-    # Padrão "Open for N more days"
     m = re.search(r'open\s+for\s+(\d+)\s+more\s+days?', texto, re.IGNORECASE)
     if m:
         days = int(m.group(1))
-        deadline = datetime.now() + timedelta(days=days)
-        return deadline.strftime("%d/%m/%Y")
-    m = re.search(
-        r'(?:open for|deadline|prazo|até|until|by)\s+([^\n\.]{3,40})',
-        texto, re.IGNORECASE
-    )
-    if m:
-        return _formatar_data(m.group(1).strip())
-    m = re.search(r'((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2})', texto, re.IGNORECASE)
+        return (datetime.now() + timedelta(days=days)).strftime("%d/%m/%Y")
+    m = re.search(r'((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+at\s+\d+:\d+)?)', texto, re.IGNORECASE)
     if m:
         return _formatar_data(m.group(1).strip())
     return ""
@@ -264,33 +238,40 @@ def _extrair_area(texto: str) -> str:
         "Legal", "Medical", "Technical", "Financial", "Literary",
         "Marketing", "IT", "Science", "General", "Law", "Patents",
         "Business", "Engineering", "Tourism", "Education",
-        "Jurídico", "Médico", "Técnico", "Financeiro", "Literário",
         "Broadcast", "Journalism", "Pharmaceutical", "Life Sciences",
         "Automotive", "Aerospace", "Mining", "Energy", "Environment",
+        "Psychology", "Social Sciences", "Well-being", "Mental Health",
     ]
     t = texto.lower()
     encontradas = [a for a in areas_conhecidas if a.lower() in t]
     return ", ".join(encontradas[:3]) if encontradas else ""
 
 
-def _extrair_contato(texto: str, url_vaga: str) -> Tuple[str, str]:
-    m = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', texto)
+def _extrair_preco(texto: str) -> str:
+    """Extrai preço/palavra do texto da descrição."""
+    m = re.search(
+        r'(?:rate|price|pay|budget|offer)[^.]{0,50}?(\d[\d,\.]+\s*(?:USD|EUR|GBP|BRL|CAD|AUD|CHF)?(?:\s*/?\s*word|\s*per\s*word|\s*per\s*source\s*word)?)',
+        texto, re.IGNORECASE
+    )
     if m:
-        return "email", m.group(0)
-    m = re.search(r'https?://[^\s<>"]+', texto)
-    if m and m.group(0) != url_vaga:
-        return "URL", m.group(0)
-    if "proz.com" in url_vaga:
-        return "ProZ.com", url_vaga
-    if "translatorscafe.com" in url_vaga:
-        return "Translators Café", url_vaga
-    return "link direto", url_vaga
+        return m.group(1).strip()
+    m = re.search(r'(\d[\d,\.]+\s*(?:USD|EUR|GBP|BRL|CAD|AUD)\s*/?\s*word)', texto, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r'(\d[\d,\.]+\s*(?:USD|EUR|GBP|BRL|CAD|AUD)\s+per\s+(?:word|source\s+word))', texto, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 
-def _extrair_data_publicacao(texto: str) -> str:
-    m = re.search(r'(?:posted|publicad[ao])\s+([^\n\.]{3,30})', texto, re.IGNORECASE)
+def _extrair_empresa(texto: str) -> str:
+    """Extrai nome de empresa do texto da descrição."""
+    m = re.search(
+        r'([A-Z][A-Za-z\s&\-\.]+(?:Ltd\.?|Inc\.?|LLC|Group|Services|Solutions|Global|Worldwide|Agency|Company|Corp\.?|GmbH|S\.A\.|B\.V\.|Limited))',
+        texto
+    )
     if m:
-        return _formatar_data(m.group(1).strip())
+        return m.group(1).strip()
     return ""
 
 
@@ -299,7 +280,6 @@ def _extrair_data_publicacao(texto: str) -> str:
 # ─────────────────────────────────────────────────────────────────
 
 def _emails_validos(emails: List[str]) -> List[str]:
-    """Filtra emails de sistema e retorna apenas emails válidos."""
     return [
         e for e in emails
         if not any(skip in e.lower() for skip in _EMAILS_IGNORAR)
@@ -309,7 +289,6 @@ def _emails_validos(emails: List[str]) -> List[str]:
 
 
 def _extrair_emails_pagina(url: str, timeout: int = 8) -> List[str]:
-    """Extrai emails de uma página web."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
         if r.status_code != 200:
@@ -320,13 +299,13 @@ def _extrair_emails_pagina(url: str, timeout: int = 8) -> List[str]:
         return []
 
 
-def _encontrar_pagina_contato(base_url: str, timeout: int = 8) -> Optional[str]:
-    """Encontra a URL da página de contato de um site."""
+def _encontrar_pagina_contato(base_url: str, soup: BeautifulSoup = None, timeout: int = 8) -> Optional[str]:
     try:
-        r = requests.get(base_url, headers=HEADERS, timeout=timeout, allow_redirects=True)
-        if r.status_code != 200:
-            return None
-        soup = BeautifulSoup(r.content, "html.parser")
+        if soup is None:
+            r = requests.get(base_url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+            if r.status_code != 200:
+                return None
+            soup = BeautifulSoup(r.content, "html.parser")
         contact_kws = ['contact', 'contato', 'kontakt', 'get-in-touch', 'reach-us', 'reach-out']
         for a in soup.find_all("a", href=True):
             href = a.get("href", "").lower()
@@ -342,53 +321,56 @@ def _encontrar_pagina_contato(base_url: str, timeout: int = 8) -> Optional[str]:
 
 
 def _construir_url_empresa(nome_empresa: str) -> Optional[str]:
-    """Tenta construir a URL do site da empresa a partir do nome."""
     if not nome_empresa or len(nome_empresa) < 3:
         return None
-    # Limpar o nome
     slug = re.sub(r'[^a-zA-Z0-9]', '', nome_empresa.lower())
     if len(slug) < 3:
         return None
     return f"https://www.{slug}.com"
 
 
-def buscar_contato_empresa(nome_empresa: str, pais: str = "") -> Dict[str, str]:
+def buscar_contato_empresa(nome_empresa: str, url_empresa: str = "", pais: str = "") -> Dict[str, str]:
     """
-    Tenta encontrar email e site de contato de uma empresa de tradução.
-    Estratégia: construir URL provável → visitar homepage → buscar página de contato.
-    Retorna dict com: site, email, fonte_busca
+    Tenta encontrar email e site de contato de uma empresa.
+    Prioriza url_empresa se fornecida; caso contrário, constrói URL a partir do nome.
     """
-    if not nome_empresa or len(nome_empresa.strip()) < 3:
+    if not nome_empresa and not url_empresa:
         return {}
 
     resultado = {}
 
-    # Tentar URL direta
-    url_tentativa = _construir_url_empresa(nome_empresa)
-    if url_tentativa:
-        try:
-            r = requests.get(url_tentativa, headers=HEADERS, timeout=8, allow_redirects=True)
-            if r.status_code == 200:
-                resultado["site"] = r.url  # URL final após redirects
-                # Buscar emails na homepage
-                emails = _emails_validos(
-                    re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', r.text)
-                )
-                if emails:
-                    resultado["email"] = emails[0]
-                    resultado["fonte_busca"] = "homepage"
+    # Usar URL fornecida ou construir a partir do nome
+    url_tentativa = url_empresa if url_empresa else _construir_url_empresa(nome_empresa)
+    if not url_tentativa:
+        return {}
+
+    try:
+        r = requests.get(url_tentativa, headers=HEADERS, timeout=8, allow_redirects=True)
+        if r.status_code == 200:
+            resultado["site"] = r.url
+            soup = BeautifulSoup(r.content, "html.parser")
+
+            # Buscar emails na homepage
+            emails = _emails_validos(
+                re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', r.text)
+            )
+            if emails:
+                resultado["email"] = emails[0]
+                resultado["fonte_busca"] = "homepage"
+                return resultado
+
+            # Buscar página de contato
+            contact_url = _encontrar_pagina_contato(resultado["site"], soup)
+            if contact_url:
+                emails_contato = _extrair_emails_pagina(contact_url)
+                if emails_contato:
+                    resultado["email"] = emails_contato[0]
+                    resultado["fonte_busca"] = "página de contato"
                     return resultado
-                # Buscar página de contato
-                contact_url = _encontrar_pagina_contato(resultado["site"])
-                if contact_url:
-                    emails_contato = _extrair_emails_pagina(contact_url)
-                    if emails_contato:
-                        resultado["email"] = emails_contato[0]
-                        resultado["fonte_busca"] = "página de contato"
-                        return resultado
-                resultado["fonte_busca"] = "site (sem email)"
-        except Exception:
-            pass
+
+            resultado["fonte_busca"] = "site (sem email)"
+    except Exception:
+        pass
 
     return resultado
 
@@ -427,40 +409,60 @@ def _scrape_proz() -> Tuple[List[Dict], List[str]]:
             continue
         seen_urls.add(job_url)
 
-        # Extrair descrição do data-content (disponível na lista)
+        # Descrição completa via data-content
         descricao_raw = unescape(a.get("data-content", ""))
-        # Limpar HTML da descrição
         descricao = re.sub(r'<[^>]+>', ' ', descricao_raw).strip()
-        descricao = re.sub(r'\s+', ' ', descricao)[:500]
+        descricao = re.sub(r'\s+', ' ', descricao)[:600]
 
-        # Subir para o flex-row container
-        flex_row = a.find_parent("div", class_=lambda c: c and "flex-row" in c)
-
-        # Subir para o jobs__result-wrap para obter mais contexto
+        # Subir para o jobs__result-wrap
         result_wrap = None
         parent = a.parent
-        for _ in range(15):
+        for _ in range(20):
             if parent and parent.get("class") and any("result-wrap" in c for c in parent.get("class", [])):
                 result_wrap = parent
                 break
             parent = parent.parent if parent else None
 
-        # Pares de idiomas via tooltip e texto direto
-        origem, destino = "", ""
-        area = ""
+        # Pares de idiomas, área e palavras via tooltips
         pares_relevantes: List[Tuple[str, str]] = []
+        area = ""
+        contagem_palavras = ""
+        formato = ""
+        data_pub = ""
+        prazo = ""
 
-        if flex_row:
-            # Verificar li com par de idiomas direto (sem tooltip)
-            for li in flex_row.find_all("li"):
-                text_li = li.get_text(strip=True)
-                if not li.find("span"):  # Sem tooltip = par de idiomas direto
-                    src, tgt = _extrair_par_idiomas_titulo(text_li)
-                    if _par_relevante(src, tgt):
-                        pares_relevantes.append((src, tgt))
+        if result_wrap:
+            full_text = result_wrap.get_text(separator="\n", strip=True)
+
+            # Palavras e formato do container
+            m_wc = re.search(r'Word count:\s*([\d,\.]+)', full_text, re.IGNORECASE)
+            if m_wc:
+                contagem_palavras = m_wc.group(1).replace(",", ".")
+            m_fmt = re.search(r'Format:\s*([^\n]+)', full_text, re.IGNORECASE)
+            if m_fmt:
+                formato = m_fmt.group(1).strip()
+
+            # Data de publicação
+            m_posted = re.search(r'Posted\s+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})', full_text, re.IGNORECASE)
+            if m_posted:
+                data_pub = _formatar_data(m_posted.group(1).strip())
+
+            # Prazo via data-title="Delivery date"
+            delivery_el = result_wrap.find(attrs={"data-title": "Delivery date"})
+            if delivery_el:
+                parent_el = delivery_el.parent
+                if parent_el:
+                    prazo_text = parent_el.get_text(strip=True)
+                    prazo = _formatar_data(prazo_text)
+
+            # Prazo via "Open for N more days"
+            if not prazo:
+                m_days = re.search(r'Open\s+for\s+(\d+)\s+more\s+days?', full_text, re.IGNORECASE)
+                if m_days:
+                    prazo = (datetime.now() + timedelta(days=int(m_days.group(1)))).strftime("%d/%m/%Y")
 
             # Tooltips: pares de idiomas e áreas
-            for span in flex_row.find_all("span", attrs={"data-toggle": "tooltip"}):
+            for span in result_wrap.find_all("span", attrs={"data-toggle": "tooltip"}):
                 title_attr = unescape(span.get("title", ""))
                 text_span = span.get_text(strip=True)
 
@@ -475,13 +477,19 @@ def _scrape_proz() -> Tuple[List[Dict], List[str]]:
                     fields = re.findall(r'<li>([^<]+)</li>', title_attr)
                     area = ", ".join(fields[:3])
 
-        # Fallback: extrair par do título
+            # Par de idiomas direto no li (sem tooltip)
+            for li in result_wrap.find_all("li"):
+                if not li.find("span"):
+                    text_li = li.get_text(strip=True)
+                    src, tgt = _extrair_par_idiomas_titulo(text_li)
+                    if _par_relevante(src, tgt):
+                        pares_relevantes.append((src, tgt))
+
+        # Fallback: par do título e descrição
         if not pares_relevantes:
             src, tgt = _extrair_par_idiomas_titulo(titulo)
             if _par_relevante(src, tgt):
                 pares_relevantes.append((src, tgt))
-
-        # Fallback: extrair par da descrição
         if not pares_relevantes:
             src, tgt = _extrair_par_idiomas_titulo(descricao)
             if _par_relevante(src, tgt):
@@ -490,62 +498,43 @@ def _scrape_proz() -> Tuple[List[Dict], List[str]]:
         if not pares_relevantes:
             continue
 
-        origem, destino = pares_relevantes[0]
-        par_display = " | ".join(f"{s}→{t}" for s, t in pares_relevantes) if len(pares_relevantes) > 1 else f"{origem} → {destino}"
+        # Deduplicar pares
+        pares_unicos = list(dict.fromkeys(pares_relevantes))
+        origem, destino = pares_unicos[0]
+        par_display = " | ".join(f"{s}→{t}" for s, t in pares_unicos) if len(pares_unicos) > 1 else f"{origem} → {destino}"
 
-        # Extrair data de publicação e prazo do container de detalhes
-        data_pub = ""
-        prazo = ""
-        tipo_poster = ""
-
-        if flex_row:
-            details_wrap = flex_row.find("div", class_=lambda c: c and "posting-details" in str(c))
-            if details_wrap:
-                # Data de publicação
-                for div in details_wrap.find_all("div"):
-                    text_div = div.get_text(strip=True)
-                    if re.search(r'Posted\s+\w+\s+\d+', text_div, re.IGNORECASE):
-                        m = re.search(r'Posted\s+(\w+\s+\d+)', text_div, re.IGNORECASE)
-                        if m:
-                            data_pub = _formatar_data(m.group(1).strip())
-                    # Prazo via ícone de delivery date
-                    icon = div.find("i", attrs={"data-title": "Delivery date"})
-                    if icon:
-                        prazo_text = div.get_text(strip=True)
-                        prazo = _formatar_data(prazo_text)
-                    # Prazo via "Open for N more days"
-                    if not prazo:
-                        m_days = re.search(r'Open\s+for\s+(\d+)\s+more\s+days?', text_div, re.IGNORECASE)
-                        if m_days:
-                            days = int(m_days.group(1))
-                            prazo = (datetime.now() + timedelta(days=days)).strftime("%d/%m/%Y")
-
-        # Tipo de poster (agência ou individual)
-        if result_wrap:
-            poster_type_div = result_wrap.find("div", class_=lambda c: c and "poster-type" in str(c))
-            if poster_type_div:
-                svg = poster_type_div.find("svg")
-                if svg:
-                    tipo_poster = svg.get("title", "")
-
-        # Extrair empresa da descrição
-        empresa = ""
-        m_empresa = re.search(
-            r'([A-Z][A-Za-z\s&\-]+(?:Ltd|Inc|LLC|Group|Services|Solutions|Global|Worldwide|Agency|Company|Corp|GmbH|S\.A\.|B\.V\.))',
-            descricao
-        )
-        if m_empresa:
-            empresa = m_empresa.group(1).strip()
-
-        # Extrair email da descrição (pode estar oculto como [HIDDEN])
-        email_desc = ""
-        m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', descricao)
-        if m_email:
-            email_desc = m_email.group(0)
-
-        # Área: usar tooltip se disponível, senão extrair da descrição
+        # Área: fallback para descrição + título
         if not area:
             area = _extrair_area(descricao + " " + titulo)
+
+        # Palavras: fallback para descrição
+        if not contagem_palavras:
+            contagem_palavras = _extrair_contagem_palavras(descricao)
+
+        # Formato: fallback para descrição
+        if not formato:
+            formato = _extrair_formato(descricao)
+
+        # Preço: extrair da descrição
+        preco = _extrair_preco(descricao)
+
+        # Empresa: extrair da descrição
+        empresa = _extrair_empresa(descricao)
+
+        # Email direto na descrição
+        email_desc = ""
+        m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', descricao)
+        if m_email and "HIDDEN" not in descricao[max(0, m_email.start()-5):m_email.end()+5]:
+            email_desc = m_email.group(0)
+
+        # Tipo de contato
+        tipo_contato = "email" if email_desc else "ProZ.com"
+        link_contato = email_desc if email_desc else job_url
+
+        # Busca reversa de contato se empresa conhecida e sem email direto
+        contato_descoberto = {}
+        if empresa and not email_desc:
+            contato_descoberto = buscar_contato_empresa(empresa)
 
         vagas.append({
             "titulo": titulo,
@@ -553,21 +542,20 @@ def _scrape_proz() -> Tuple[List[Dict], List[str]]:
             "idioma_destino": destino,
             "par_display": par_display,
             "area": area,
-            "contagem_palavras": _extrair_contagem_palavras(descricao),
-            "formato": _extrair_formato(descricao),
+            "contagem_palavras": contagem_palavras,
+            "formato": formato,
             "prazo": prazo,
-            "tipo_contato": "email" if email_desc else "ProZ.com",
-            "link_contato": email_desc if email_desc else job_url,
+            "tipo_contato": tipo_contato,
+            "link_contato": link_contato,
             "link_vaga": job_url,
             "fonte": "ProZ.com",
             "data_publicacao": data_pub,
             "detalhes": descricao,
             "contato_pessoa": "",
             "empresa": empresa,
-            "pais": "",
-            "preco_palavra": "",
-            "tipo_poster": tipo_poster,
-            "contato_descoberto": {},
+            "pais": "",  # Não disponível na lista pública do ProZ
+            "preco_palavra": preco,
+            "contato_descoberto": contato_descoberto,
         })
 
     logger.info(f"ProZ.com: {len(vagas)} vaga(s) relevante(s) encontrada(s)")
@@ -575,11 +563,10 @@ def _scrape_proz() -> Tuple[List[Dict], List[str]]:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Scraping do Translators Café (com login por sessão)
+# Scraping do Translators Café (com login + visita a páginas de detalhes)
 # ─────────────────────────────────────────────────────────────────
 
 def _tc_fazer_login(session: requests.Session) -> bool:
-    """Faz login no Translators Café. Retorna True se bem-sucedido."""
     try:
         resp = session.get(TC_LOGIN_URL, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True)
         if resp.status_code == 403:
@@ -619,7 +606,7 @@ def _tc_fazer_login(session: requests.Session) -> bool:
             logger.warning("Translators Café: acesso negado (403) após POST de login")
             return False
         else:
-            logger.warning("Translators Café: login pode ter falhado — verificar credenciais")
+            logger.warning("Translators Café: login pode ter falhado")
             return False
 
     except Exception as exc:
@@ -627,8 +614,108 @@ def _tc_fazer_login(session: requests.Session) -> bool:
         return False
 
 
+def _tc_extrair_detalhes(session: requests.Session, job_id: str, url_vaga: str) -> Dict[str, str]:
+    """
+    Visita a página de detalhes de uma vaga do TC e extrai todos os campos disponíveis:
+    país, empresa, URL da empresa, email/site de contato, especialização, tipo de serviço,
+    idiomas, descrição completa e data de publicação.
+    """
+    campos = {
+        "pais": "", "empresa": "", "url_empresa": "", "email_contato": "",
+        "site_contato": "", "area": "", "tipo_servico": "", "idiomas": "",
+        "descricao": "", "data_publicacao": "",
+    }
+
+    try:
+        time.sleep(SLEEP)
+        resp = session.get(url_vaga, headers={**HEADERS, "Referer": TC_JOBS_URL}, timeout=TIMEOUT)
+        if resp.status_code != 200:
+            logger.debug(f"TC detalhe {job_id}: status {resp.status_code}")
+            return campos
+
+        soup = BeautifulSoup(resp.content, "html.parser")
+        html = resp.text
+
+        # 1. Data de publicação — "Job #374422posted on3/18/2026at11:21GMT"
+        job_header = soup.find(string=re.compile(r'Job #\d+'))
+        if job_header:
+            parent_text = job_header.parent.get_text(strip=True)
+            m_date = re.search(r'posted on\s*(\d+/\d+/\d+)', parent_text, re.IGNORECASE)
+            if m_date:
+                campos["data_publicacao"] = _formatar_data(m_date.group(1))
+
+        # 2. País — flag img com alt de 2 letras maiúsculas seguida de texto
+        country_img = soup.find("img", alt=re.compile(r'^[A-Z]{2}$'))
+        if country_img:
+            parent = country_img.parent
+            country_text = parent.get_text(strip=True)
+            # Remover o código da flag (2 letras) e pegar o nome do país
+            country_clean = re.sub(r'^[A-Z]{2}\s*', '', country_text).strip()
+            if country_clean:
+                campos["pais"] = country_clean
+
+        # 3. Empresa — classe sjCo
+        co_el = soup.find(class_=lambda c: c and "sjCo" in c)
+        if co_el:
+            company_link = co_el.find("a")
+            if company_link:
+                campos["empresa"] = company_link.get_text(strip=True)
+                campos["url_empresa"] = company_link.get("href", "")
+
+        # 4. Email/site de contato — sjEmailInfo
+        email_el = soup.find(class_="sjEmailInfo")
+        if email_el:
+            email_link = email_el.find("a")
+            if email_link:
+                href = email_link.get("href", "")
+                text = email_link.get_text(strip=True)
+                if "@" in text or (href and "@" in href):
+                    campos["email_contato"] = text if "@" in text else href.replace("mailto:", "")
+                elif href.startswith("http"):
+                    campos["site_contato"] = href
+                else:
+                    # É um domínio sem mailto — construir URL
+                    domain = text.strip()
+                    if "." in domain and not domain.startswith("http"):
+                        campos["site_contato"] = f"https://{domain}"
+                    elif href.startswith("http"):
+                        campos["site_contato"] = href
+
+        # 5. Campos sjParam
+        for el in soup.find_all(class_="sjParam"):
+            text = el.get_text(separator=" ", strip=True)
+            if "Job type:" in text:
+                campos["tipo_servico"] = text.replace("Job type:", "").strip()
+                # Limpar vírgulas e espaços extras
+                campos["tipo_servico"] = re.sub(r'\s+', ' ', campos["tipo_servico"]).strip(", ")
+            elif "Languages:" in text:
+                campos["idiomas"] = text.replace("Languages:", "").strip()
+            elif "Specialization:" in text:
+                campos["area"] = text.replace("Specialization:", "").strip()
+
+        # 6. Descrição — bloco sjParam que contém "Job description:"
+        desc_parent = None
+        for el in soup.find_all(class_="sjParam"):
+            text = el.get_text(separator=" ", strip=True)
+            if "Job description:" in text:
+                desc_parent = el.parent
+                break
+
+        if desc_parent:
+            desc_text = desc_parent.get_text(separator=" ", strip=True)
+            m_desc = re.search(r'Job description:\s*(.+?)(?:\s*Job #|\s*Before accepting|$)', desc_text, re.IGNORECASE | re.DOTALL)
+            if m_desc:
+                campos["descricao"] = m_desc.group(1).strip()[:600]
+
+        return campos
+
+    except Exception as exc:
+        logger.debug(f"TC detalhe {job_id}: erro — {exc}")
+        return campos
+
+
 def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
-    """Faz scraping das vagas do Translators Café com login autenticado."""
+    """Faz scraping das vagas do Translators Café com login autenticado e visita às páginas de detalhes."""
     vagas: List[Dict] = []
     erros: List[str] = []
 
@@ -640,15 +727,12 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
     seen_ids: set = set()
 
     for page in range(1, 6):
-        if page == 1:
-            url = TC_JOBS_URL
-        else:
-            url = f"{TC_JOBS_URL}?Mode=Selected&Page={page}"
+        url = TC_JOBS_URL if page == 1 else f"{TC_JOBS_URL}?Mode=Selected&Page={page}"
 
         try:
             resp = session.get(url, headers={**HEADERS, "Referer": TC_JOBS_URL}, timeout=TIMEOUT)
             if resp.status_code == 403:
-                erros.append(f"Translators Café página {page}: acesso bloqueado (403)")
+                erros.append(f"Translators Café página {page}: acesso bloqueado (403) — IP do servidor bloqueado pelo TC")
                 break
             resp.raise_for_status()
         except Exception as exc:
@@ -671,14 +755,15 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
                 continue
             seen_ids.add(job_id)
 
-            url_vaga = f"https://www.translatorscafe.com/cafe/SelectedJob.asp?Job={job_id}"
+            url_vaga = f"{TC_BASE_URL}/cafe/SelectedJob.asp?Job={job_id}"
 
+            # Extrair par de idiomas da lista
             td = a.find_parent('td')
             tr = td.find_parent('tr') if td else None
 
             pares_relevantes: List[Tuple[str, str]] = []
-            data_pub = ""
-            area_tc = ""
+            area_lista = ""
+            data_pub_lista = ""
 
             if tr:
                 cells = tr.find_all('td')
@@ -695,19 +780,17 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
                     # Célula 0: tipo de serviço (última linha)
                     cell0_lines = [l.strip() for l in cells[0].get_text(separator='\n').split('\n') if l.strip()]
                     if len(cell0_lines) >= 2:
-                        area_tc = cell0_lines[-1]
+                        area_lista = cell0_lines[-1]
 
-                # Data de publicação na linha anterior (cabeçalho do bloco)
+                # Data de publicação na linha anterior
                 prev_tr = tr.find_previous_sibling('tr')
                 if prev_tr:
                     prev_text = prev_tr.get_text(strip=True)
-                    m_date = re.search(
-                        r'(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s+[AP]M\s+GMT)',
-                        prev_text
-                    )
+                    m_date = re.search(r'(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s+[AP]M\s+GMT)', prev_text)
                     if m_date:
-                        data_pub = _formatar_data(m_date.group(1))
+                        data_pub_lista = _formatar_data(m_date.group(1))
 
+            # Fallback: par do título
             if not pares_relevantes:
                 src, tgt = _extrair_par_idiomas_titulo(titulo)
                 if _par_relevante(src, tgt):
@@ -716,39 +799,66 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
             if not pares_relevantes:
                 continue
 
-            origem, destino = pares_relevantes[0]
-            todos_pares_str = " | ".join(f"{s}→{t}" for s, t in pares_relevantes)
-            par_display = todos_pares_str if len(pares_relevantes) > 1 else f"{origem} → {destino}"
+            pares_unicos = list(dict.fromkeys(pares_relevantes))
+            origem, destino = pares_unicos[0]
+            par_display = " | ".join(f"{s}→{t}" for s, t in pares_unicos) if len(pares_unicos) > 1 else f"{origem} → {destino}"
 
-            contexto = tr.get_text(separator=" ", strip=True) if tr else titulo
+            # Visitar página de detalhes para obter campos completos
+            detalhes = _tc_extrair_detalhes(session, job_id, url_vaga)
 
-            # Tentar extrair empresa do título (padrão "Empresa: descrição")
-            empresa_tc = ""
-            m_emp = re.match(r'^([A-Z][A-Za-z\s&\-]{2,40}(?:Ltd|Inc|LLC|Group|Services|Solutions|Global|Worldwide|Agency|Company|Corp)?)\s*:\s*.+', titulo)
-            if m_emp:
-                empresa_tc = m_emp.group(1).strip()
+            # Mesclar dados: detalhes têm prioridade sobre lista
+            pais_final = detalhes.get("pais", "")
+            empresa_final = detalhes.get("empresa", "")
+            url_empresa = detalhes.get("url_empresa", "")
+            email_contato = detalhes.get("email_contato", "")
+            site_contato = detalhes.get("site_contato", "")
+            area_final = detalhes.get("area", "") or area_lista or _extrair_area(titulo)
+            descricao_final = detalhes.get("descricao", "")
+            data_pub_final = detalhes.get("data_publicacao", "") or data_pub_lista
+            tipo_servico = detalhes.get("tipo_servico", "") or area_lista
+
+            # Contagem de palavras e formato da descrição
+            contagem_palavras = _extrair_contagem_palavras(descricao_final)
+            formato = _extrair_formato(descricao_final)
+            preco = _extrair_preco(descricao_final)
+            prazo = _extrair_prazo(descricao_final)
+
+            # Tipo e link de contato
+            if email_contato:
+                tipo_contato = "email"
+                link_contato = email_contato
+            elif site_contato:
+                tipo_contato = "URL"
+                link_contato = site_contato
+            else:
+                tipo_contato = "Translators Café"
+                link_contato = url_vaga
+
+            # Busca reversa se empresa conhecida e sem contato direto
+            contato_descoberto = {}
+            if empresa_final and not email_contato:
+                contato_descoberto = buscar_contato_empresa(empresa_final, url_empresa, pais_final)
 
             vagas.append({
                 "titulo": titulo,
                 "idioma_origem": origem,
                 "idioma_destino": destino,
                 "par_display": par_display,
-                "area": area_tc or _extrair_area(contexto),
-                "contagem_palavras": _extrair_contagem_palavras(contexto),
-                "formato": _extrair_formato(contexto),
-                "prazo": _extrair_prazo(contexto),
-                "tipo_contato": "Translators Café",
-                "link_contato": url_vaga,
+                "area": area_final,
+                "contagem_palavras": contagem_palavras,
+                "formato": formato,
+                "prazo": prazo,
+                "tipo_contato": tipo_contato,
+                "link_contato": link_contato,
                 "link_vaga": url_vaga,
                 "fonte": "Translators Café",
-                "data_publicacao": data_pub,
-                "detalhes": "",
+                "data_publicacao": data_pub_final,
+                "detalhes": descricao_final,
                 "contato_pessoa": "",
-                "empresa": empresa_tc,
-                "pais": "",
-                "preco_palavra": "",
-                "tipo_poster": "",
-                "contato_descoberto": {},
+                "empresa": empresa_final,
+                "pais": pais_final,
+                "preco_palavra": preco,
+                "contato_descoberto": contato_descoberto,
             })
 
         time.sleep(SLEEP)
@@ -767,7 +877,6 @@ TD_URLS: Dict[str, str] = {
     "EN-ES": "https://www.translationdirectory.com/translation_jobs/english_spanish_translation_jobs.php",
 }
 
-# Regex para extrair campos do bloco de texto do TD
 _TD_CAMPOS = {
     "source_lang": re.compile(r'Source language\(s\):\s*(.+?)(?=\s+Target language|\s+Details|\s+Deadline|\s+Posted|\s+Contact|\s+Country|\s+Number|\s+This|$)', re.IGNORECASE),
     "target_lang": re.compile(r'Target language\(s\):\s*(.+?)(?=\s+Source language|\s+Details|\s+Deadline|\s+Posted|\s+Contact|\s+Country|\s+Number|\s+This|$)', re.IGNORECASE),
@@ -782,32 +891,27 @@ _TD_CAMPOS = {
 
 
 def _extrair_campos_td(bloco: str) -> Dict[str, str]:
-    """Extrai todos os campos estruturados de um bloco de texto do Translation Directory."""
     campos = {}
     for nome, rx in _TD_CAMPOS.items():
         m = rx.search(bloco)
         campos[nome] = m.group(1).strip() if m else ""
 
-    # Formatar datas
     if campos.get("prazo"):
         campos["prazo"] = _formatar_data(campos["prazo"])
     if campos.get("posted"):
         campos["posted"] = _formatar_data(campos["posted"])
 
-    # Limpar campos ocultos pelo TD
     for k in ("contato", "empresa"):
         if "[Hidden by TD]" in campos.get(k, ""):
             campos[k] = ""
 
-    # Limitar detalhes a 500 chars
     if campos.get("detalhes"):
-        campos["detalhes"] = campos["detalhes"][:500].strip()
+        campos["detalhes"] = campos["detalhes"][:600].strip()
 
     return campos
 
 
 def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
-    """Faz scraping das vagas do Translation Directory (últimos 30 dias)."""
     vagas: List[Dict] = []
     erros: List[str] = []
     seen_urls: set = set()
@@ -836,7 +940,6 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
             if not titulo or len(titulo) < 5:
                 continue
 
-            # Extrair bloco de informações do próximo parágrafo
             parent_p = a.find_parent("p")
             campos: Dict[str, str] = {}
             bloco_texto = ""
@@ -847,7 +950,7 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
                     bloco_texto = next_p.get_text(" ", strip=True)
                     campos = _extrair_campos_td(bloco_texto)
 
-            # Determinar par de idiomas
+            # Par de idiomas
             origem_code, destino_code = "", ""
             source_lang = campos.get("source_lang", "")
             target_lang = campos.get("target_lang", "")
@@ -861,7 +964,6 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
                         destino_code = tgt_code
                         break
 
-            # Fallback: usar o par_label
             if not origem_code or not destino_code:
                 parts = par_label.split("-")
                 if len(parts) == 2:
@@ -874,7 +976,7 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
                 else:
                     continue
 
-            # Filtrar apenas vagas dos últimos 30 dias
+            # Filtro de 30 dias
             data_pub_raw = campos.get("posted", "")
             if data_pub_raw:
                 try:
@@ -884,19 +986,21 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
                 except Exception:
                     pass
 
-            tipo_contato = "email" if re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', bloco_texto) else "Translation Directory"
+            empresa_td = campos.get("empresa", "")
+            pais_td = campos.get("pais", "")
+
+            # Email direto no bloco
             link_contato_email = ""
             m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', bloco_texto)
             if m_email:
                 link_contato_email = m_email.group(0)
 
-            empresa_td = campos.get("empresa", "")
-            pais_td = campos.get("pais", "")
+            tipo_contato = "email" if link_contato_email else "Translation Directory"
 
-            # Busca reversa de contato se empresa conhecida e sem email direto
+            # Busca reversa se empresa conhecida e sem email direto
             contato_descoberto = {}
             if empresa_td and not link_contato_email:
-                contato_descoberto = buscar_contato_empresa(empresa_td, pais_td)
+                contato_descoberto = buscar_contato_empresa(empresa_td, "", pais_td)
                 if contato_descoberto.get("email"):
                     tipo_contato = "email (descoberto)"
                     link_contato_email = contato_descoberto["email"]
@@ -920,7 +1024,6 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
                 "empresa": empresa_td,
                 "pais": pais_td,
                 "preco_palavra": campos.get("preco", ""),
-                "tipo_poster": "",
                 "contato_descoberto": contato_descoberto,
             })
 
@@ -938,7 +1041,6 @@ def filtrar_novas_vagas(
     vagas: List[Dict],
     seen: Dict[str, str],
 ) -> Tuple[List[Dict], Dict[str, str]]:
-    """Filtra apenas vagas não vistas antes. Retorna (novas_vagas, seen_atualizado)."""
     novas: List[Dict] = []
     seen_novo = dict(seen)
 
