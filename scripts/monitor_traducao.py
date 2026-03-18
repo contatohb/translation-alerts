@@ -901,6 +901,8 @@ def _extrair_campos_td(bloco: str) -> Dict[str, str]:
     if campos.get("posted"):
         campos["posted"] = _formatar_data(campos["posted"])
 
+    # Registrar se empresa/contato estão ocultos pelo TD (para exibir aviso)
+    campos["contato_oculto_td"] = "1" if "[Hidden by TD]" in campos.get("contato", "") or "[Hidden by TD]" in campos.get("empresa", "") else ""
     for k in ("contato", "empresa"):
         if "[Hidden by TD]" in campos.get(k, ""):
             campos[k] = ""
@@ -911,7 +913,130 @@ def _extrair_campos_td(bloco: str) -> Dict[str, str]:
     return campos
 
 
+def _td_extrair_pagina_individual(job_url: str) -> Dict[str, str]:
+    """
+    Visita a página individual de uma vaga do Translation Directory e extrai
+    todos os campos disponíveis, incluindo empresa e contato mencionados na descrição.
+    Retorna dict com: empresa, contato_pessoa, pais, detalhes, preco, prazo, posted,
+                      source_lang, target_lang, email_direto, site_mencionado
+    """
+    resultado: Dict[str, str] = {}
+    try:
+        r = requests.get(job_url, headers=HEADERS, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return resultado
+        soup = BeautifulSoup(r.content, "html.parser")
+
+        # Remover nav, scripts, footer, ads
+        for tag in soup(["script", "style", "nav", "footer", "ins"]):
+            tag.decompose()
+
+        texto_completo = soup.get_text(separator="\n", strip=True)
+        linhas = [l.strip() for l in texto_completo.split("\n") if l.strip()]
+        texto_bloco = " ".join(linhas)
+
+        # Extrair campos estruturados com regex
+        campos_rx = {
+            "source_lang": re.compile(r'Source language\(s\):\s*(.+?)(?=\s+Target language|\s+Details|\s+Deadline|\s+Posted|\s+Contact|\s+Country|\s+Number|\s+This|$)', re.IGNORECASE),
+            "target_lang": re.compile(r'Target language\(s\):\s*(.+?)(?=\s+Source language|\s+Details|\s+Deadline|\s+Posted|\s+Contact|\s+Country|\s+Number|\s+This|$)', re.IGNORECASE),
+            "detalhes":    re.compile(r'Details of the project:\s*(.+?)(?=\s+This job is:|\s+We want to pay|\s+Who can apply|\s+Deadline for applying|\s+Contact person|\s+Special requirements|$)', re.IGNORECASE | re.DOTALL),
+            "preco":       re.compile(r'We want to pay for this job[:\s]+(.+?)(?=\s+Who can apply|\s+Deadline|\s+Contact|$)', re.IGNORECASE),
+            "prazo":       re.compile(r'Deadline for applying:\s*(\S+)', re.IGNORECASE),
+            "contato":     re.compile(r'Contact person:\s*(.+?)(?=\s+Company name|\s+Country|\s+IP:|$)', re.IGNORECASE),
+            "empresa":     re.compile(r'Company name:\s*(.+?)(?=\s+Country|\s+IP:|$)', re.IGNORECASE),
+            "pais":        re.compile(r'Country:\s*(\w+(?:\s+\w+)?)', re.IGNORECASE),
+            "posted":      re.compile(r'Posted on(?:\s+\w+,)?\s*(\d{1,2}\s+\w+\s+\d{4})', re.IGNORECASE),
+        }
+        for nome, rx in campos_rx.items():
+            m = rx.search(texto_bloco)
+            resultado[nome] = m.group(1).strip() if m else ""
+
+        # Limpar [Hidden by TD] e registrar ocultamento
+        resultado["contato_oculto_td"] = "1" if any(
+            "[Hidden by TD]" in resultado.get(k, "") for k in ("contato", "empresa")
+        ) else ""
+        for k in ("contato", "empresa"):
+            if "[Hidden by TD]" in resultado.get(k, ""):
+                resultado[k] = ""
+
+        # Truncar detalhes
+        if resultado.get("detalhes"):
+            resultado["detalhes"] = resultado["detalhes"][:800].strip()
+
+        # Formatar datas
+        if resultado.get("prazo"):
+            resultado["prazo"] = _formatar_data(resultado["prazo"])
+        if resultado.get("posted"):
+            resultado["posted"] = _formatar_data(resultado["posted"])
+
+        # ── Extração de empresa do título da página ──────────────────
+        # O título costuma ser: "NomeEmpresa is looking for..."
+        titulo_pagina = ""
+        title_tag = soup.find("title")
+        if title_tag:
+            titulo_pagina = title_tag.get_text(strip=True)
+        # Tentar h1/h2
+        for htag in soup.find_all(["h1", "h2", "h3"]):
+            t = htag.get_text(strip=True)
+            if len(t) > 10 and any(kw in t.lower() for kw in ["looking for", "seeking", "needs", "requires", "hiring", "recrut"]):
+                titulo_pagina = t
+                break
+
+        # Extrair empresa do título se não encontrada nos campos estruturados
+        if not resultado.get("empresa"):
+            # Padrão: "NomeEmpresa is looking for / needs / seeks / requires"
+            m_emp = re.search(
+                r'^([A-Z][A-Za-z0-9\s&\-\.]+?)\s+(?:is\s+)?(?:looking for|seeking|needs|requires|hiring|recrut)',
+                titulo_pagina, re.IGNORECASE
+            )
+            if m_emp:
+                resultado["empresa"] = m_emp.group(1).strip()
+
+        # Tentar extrair empresa da descrição se ainda não encontrada
+        if not resultado.get("empresa") and resultado.get("detalhes"):
+            # Padrão: primeira frase menciona a empresa
+            m_emp2 = re.search(
+                r'^([A-Z][A-Za-z0-9\s&\-\.]+?)\s+(?:is\s+)?(?:looking for|seeking|needs|requires|hiring|recrut|invit)',
+                resultado["detalhes"], re.IGNORECASE
+            )
+            if m_emp2:
+                resultado["empresa"] = m_emp2.group(1).strip()
+            else:
+                # Fallback: padrão genérico de empresa
+                resultado["empresa"] = _extrair_empresa(resultado["detalhes"])
+
+        # ── Extrair email direto do texto completo ────────────────────
+        emails_pagina = re.findall(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', texto_bloco)
+        emails_validos = _emails_validos(emails_pagina)
+        resultado["email_direto"] = emails_validos[0] if emails_validos else ""
+
+        # ── Extrair site mencionado na descrição ─────────────────────
+        detalhes_texto = resultado.get("detalhes", "") + " " + texto_bloco[:500]
+        m_site = re.search(
+            r'(?:https?://|www\.)[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s<>"]*)?',
+            detalhes_texto
+        )
+        if m_site:
+            site_raw = m_site.group(0)
+            if not any(x in site_raw.lower() for x in [
+                'translationdirectory', 'google', 'facebook', 'twitter',
+                'linkedin', 'forms.gle', 'addthis', 'googlesyndication',
+                'pcvector', 'truechristianity', 'w3.org'
+            ]):
+                resultado["site_mencionado"] = site_raw if site_raw.startswith('http') else f'https://{site_raw}'
+
+    except Exception as exc:
+        logger.debug(f"TD página individual {job_url}: erro — {exc}")
+
+    return resultado
+
+
 def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
+    """
+    Faz scraping das vagas do Translation Directory.
+    Para cada vaga encontrada na lista, visita obrigatoriamente a página individual
+    para extrair empresa, contato e descrição completa, mesmo quando ocultos pelo TD.
+    """
     vagas: List[Dict] = []
     erros: List[str] = []
     seen_urls: set = set()
@@ -936,21 +1061,15 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
                 continue
             seen_urls.add(job_url)
 
-            titulo = a.get_text(strip=True)
-            if not titulo or len(titulo) < 5:
+            titulo_lista = a.get_text(strip=True)
+            if not titulo_lista or len(titulo_lista) < 5:
                 continue
 
-            parent_p = a.find_parent("p")
-            campos: Dict[str, str] = {}
-            bloco_texto = ""
+            # Visitar a página individual para extrair todos os campos
+            campos = _td_extrair_pagina_individual(job_url)
+            time.sleep(SLEEP)
 
-            if parent_p:
-                next_p = parent_p.find_next_sibling("p")
-                if next_p:
-                    bloco_texto = next_p.get_text(" ", strip=True)
-                    campos = _extrair_campos_td(bloco_texto)
-
-            # Par de idiomas
+            # Par de idiomas: usar campos da página individual, fallback para par_label
             origem_code, destino_code = "", ""
             source_lang = campos.get("source_lang", "")
             target_lang = campos.get("target_lang", "")
@@ -976,58 +1095,69 @@ def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
                 else:
                     continue
 
-            # Filtro de 30 dias
-            data_pub_raw = campos.get("posted", "")
-            if data_pub_raw:
-                try:
-                    dt_pub = datetime.strptime(data_pub_raw, "%d/%m/%Y")
-                    if (datetime.now() - dt_pub).days > 30:
-                        continue
-                except Exception:
-                    pass
+            # Título: usar o da página individual se mais descritivo
+            titulo = titulo_lista
 
             empresa_td = campos.get("empresa", "")
             pais_td = campos.get("pais", "")
+            contato_pessoa = campos.get("contato", "")
+            contato_oculto = campos.get("contato_oculto_td", "")
+            detalhes_td = campos.get("detalhes", "")
+            data_pub_raw = campos.get("posted", "")
 
-            # Email direto no bloco
-            link_contato_email = ""
-            m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', bloco_texto)
-            if m_email:
-                link_contato_email = m_email.group(0)
-
+            # Email direto na página individual
+            link_contato_email = campos.get("email_direto", "")
             tipo_contato = "email" if link_contato_email else "Translation Directory"
 
-            # Busca reversa se empresa conhecida e sem email direto
+            # Site mencionado na descrição
+            site_na_descricao = campos.get("site_mencionado", "")
+
+            # Busca reversa: priorizar site na descrição, depois nome da empresa
             contato_descoberto = {}
-            if empresa_td and not link_contato_email:
-                contato_descoberto = buscar_contato_empresa(empresa_td, "", pais_td)
-                if contato_descoberto.get("email"):
-                    tipo_contato = "email (descoberto)"
-                    link_contato_email = contato_descoberto["email"]
+            if not link_contato_email:
+                if site_na_descricao:
+                    contato_descoberto = buscar_contato_empresa("", site_na_descricao, pais_td)
+                    if not contato_descoberto:
+                        contato_descoberto = {"site": site_na_descricao, "fonte_busca": "mencionado na descrição"}
+                    if contato_descoberto.get("email"):
+                        tipo_contato = "email (descoberto)"
+                        link_contato_email = contato_descoberto["email"]
+                if not contato_descoberto.get("email") and empresa_td:
+                    # Busca reversa pelo nome da empresa
+                    resultado_empresa = buscar_contato_empresa(empresa_td, "", pais_td)
+                    if resultado_empresa:
+                        if resultado_empresa.get("email"):
+                            tipo_contato = "email (descoberto)"
+                            link_contato_email = resultado_empresa["email"]
+                        # Mesclar: manter site_na_descricao se já encontrado
+                        if not contato_descoberto.get("site"):
+                            contato_descoberto = resultado_empresa
+                        else:
+                            contato_descoberto.update({k: v for k, v in resultado_empresa.items() if k not in contato_descoberto})
+                if not contato_descoberto and contato_oculto:
+                    contato_descoberto = {"aviso": "Contato oculto pelo TD (requer cadastro pago)"}
 
             vagas.append({
                 "titulo": titulo,
                 "idioma_origem": origem_code,
                 "idioma_destino": destino_code,
                 "par_display": f"{origem_code} → {destino_code}",
-                "area": _extrair_area(bloco_texto),
-                "contagem_palavras": _extrair_contagem_palavras(bloco_texto),
-                "formato": _extrair_formato(bloco_texto),
+                "area": _extrair_area(detalhes_td),
+                "contagem_palavras": _extrair_contagem_palavras(detalhes_td),
+                "formato": _extrair_formato(detalhes_td),
                 "prazo": campos.get("prazo", ""),
                 "tipo_contato": tipo_contato,
                 "link_contato": link_contato_email or job_url,
                 "link_vaga": job_url,
                 "fonte": "Translation Directory",
                 "data_publicacao": data_pub_raw,
-                "detalhes": campos.get("detalhes", ""),
-                "contato_pessoa": campos.get("contato", ""),
+                "detalhes": detalhes_td,
+                "contato_pessoa": contato_pessoa,
                 "empresa": empresa_td,
                 "pais": pais_td,
                 "preco_palavra": campos.get("preco", ""),
                 "contato_descoberto": contato_descoberto,
             })
-
-        time.sleep(SLEEP)
 
     logger.info(f"Translation Directory: {len(vagas)} vaga(s) relevante(s) encontrada(s)")
     return vagas, erros

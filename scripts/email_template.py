@@ -193,6 +193,24 @@ def _bloco_contato_descoberto(contato: Dict, accent: str) -> str:
     """Gera bloco HTML destacado para contato descoberto via busca reversa."""
     if not contato:
         return ""
+
+    # Caso especial: contato oculto pelo TD
+    aviso = contato.get("aviso", "")
+    if aviso:
+        return f'''
+    <tr>
+      <td colspan="2" style="padding:8px 0 4px 0;">
+        <div class="cd-box" style="border-left:3px solid #e67e22; background:#1a1205;">
+          <div class="cd-lbl" style="color:#e67e22;">&#128274; Contato Restrito
+            <span class="cd-sub" style="color:#a04000;">(requer cadastro pago no TD)</span>
+          </div>
+          <div style="color:#b7770d; font-size:12px; font-family:Arial,sans-serif; margin-top:4px;">
+            Acesse a vaga e faça login para ver empresa e contato.
+          </div>
+        </div>
+      </td>
+    </tr>'''
+
     email = contato.get("email", "")
     site = contato.get("site", "")
     fonte_busca = contato.get("fonte_busca", "busca reversa")
@@ -298,6 +316,9 @@ def _card_vaga(v: Dict, idx: int, total: int) -> str:
     elif contato_descoberto.get("site"):
         cv_status = "Site encontrado"
         cv_color = "#3498db"
+    elif contato_descoberto.get("aviso"):
+        cv_status = "&#128274; Contato restrito (TD)"
+        cv_color = "#e67e22"
 
     return f'''
     <table width="100%" cellpadding="0" cellspacing="0" border="0" class="card"
