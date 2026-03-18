@@ -3,13 +3,12 @@
 Alerta diário de novas vagas de tradução.
 
 Executa o monitor_traducao.py, filtra apenas vagas NOVAS
-(não alertadas antes), salva o email em arquivo JSON para
-envio posterior via Gmail MCP diretamente pelo shell.
+(não alertadas antes), gera email HTML premium e salva
+o payload JSON para envio via Gmail MCP pelo shell.
 
 Uso:
     python3 alerta_traducao.py
-    # O email será salvo em /tmp/traducao_email_payload.json
-    # e o assunto em /tmp/traducao_email_subject.txt
+    # O payload será salvo em /tmp/traducao_email_payload.json
 """
 from __future__ import annotations
 
@@ -44,6 +43,8 @@ SEEN_PATH    = os.path.join(_PROJECT_DIR, "data", "traducao_seen.json")
 PAYLOAD_PATH = "/tmp/traducao_email_payload.json"
 SUBJECT_PATH = "/tmp/traducao_email_subject.txt"
 
+MAX_VAGAS_POR_EMAIL = 50
+
 
 # ─────────────────────────────────────────────────────────────────
 # Histórico de vagas já alertadas
@@ -75,23 +76,24 @@ def main():
     warnings.filterwarnings("ignore")
 
     hoje = date.today()
+    date_str = hoje.strftime("%d/%m/%Y")
     logger.info(f"Alerta de vagas de tradução — {hoje.isoformat()}")
 
-    # Importar módulo de monitoramento
+    # Importar módulos
     try:
-        from monitor_traducao import (
-            buscar_vagas,
-            filtrar_novas_vagas,
-            formatar_email_traducao,
-        )
+        from monitor_traducao import buscar_vagas, filtrar_novas_vagas
+        from email_template import gerar_payloads_email
     except ImportError as e:
-        logger.error(f"Erro ao importar monitor_traducao: {e}")
+        logger.error(f"Erro ao importar módulos: {e}")
         return 1
 
     # Buscar vagas
     logger.info("Buscando vagas de tradução (PT/EN/ES)...")
     vagas, erros = buscar_vagas()
     logger.info(f"Vagas encontradas: {len(vagas)}")
+    if erros:
+        for err in erros:
+            logger.warning(f"Aviso: {err}")
 
     # Carregar histórico e filtrar novas
     seen = load_seen(SEEN_PATH)
@@ -101,51 +103,31 @@ def main():
     # Salvar histórico atualizado
     save_seen(seen_atualizado, SEEN_PATH)
 
-    # Limitar a 50 vagas por email para evitar payloads muito grandes
-    MAX_VAGAS_POR_EMAIL = 50
-    lotes = [novas[i:i+MAX_VAGAS_POR_EMAIL] for i in range(0, max(len(novas), 1), MAX_VAGAS_POR_EMAIL)]
-    if not lotes:
-        lotes = [[]]
-    total_lotes = len(lotes)
+    # Gerar payloads usando o template premium
+    payloads = gerar_payloads_email(
+        vagas=novas,
+        erros=erros,
+        destinatario=RECIPIENT,
+        max_por_email=MAX_VAGAS_POR_EMAIL,
+    )
 
-    messages = []
-    for idx, lote in enumerate(lotes, 1):
-        # Gerar corpo do email
-        corpo = formatar_email_traducao(lote, erros if idx == 1 else [])
-        if idx == 1:
-            print(corpo[:2000])  # Preview do primeiro lote
+    # Salvar payload para envio via Gmail MCP
+    # Formato: {"messages": [...]} com todos os emails em uma lista única
+    all_messages = []
+    for p in payloads:
+        all_messages.extend(p["messages"])
 
-        # Definir assunto
-        if novas:
-            if total_lotes > 1:
-                assunto = (
-                    f"[Tradução] {len(novas)} nova(s) vaga(s) — "
-                    f"{hoje.strftime('%d/%m/%Y')} (parte {idx}/{total_lotes})"
-                )
-            else:
-                assunto = (
-                    f"[Tradução] {len(novas)} nova(s) vaga(s) — "
-                    f"{hoje.strftime('%d/%m/%Y')}"
-                )
-        else:
-            assunto = f"[Tradução] Nenhuma vaga nova — {hoje.strftime('%d/%m/%Y')}"
+    payload_final = {"messages": all_messages}
 
-        messages.append({
-            "subject": assunto,
-            "to": [RECIPIENT],
-            "content": corpo,
-        })
-
-    # Salvar payload do email em arquivo para envio via Gmail MCP
-    payload = {"messages": messages}
     with open(PAYLOAD_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+        json.dump(payload_final, f, ensure_ascii=False)
 
     with open(SUBJECT_PATH, "w", encoding="utf-8") as f:
-        f.write(messages[0]["subject"])
+        f.write(all_messages[0]["subject"])
 
-    logger.info(f"Payload do email salvo em: {PAYLOAD_PATH} ({total_lotes} mensagem(ns))")
-    logger.info(f"Assunto: {messages[0]['subject']}")
+    logger.info(f"Payload salvo em: {PAYLOAD_PATH} ({len(all_messages)} mensagem(ns))")
+    logger.info(f"Assunto: {all_messages[0]['subject']}")
+    logger.info(f"Tamanho do payload: {os.path.getsize(PAYLOAD_PATH):,} bytes")
     return 0
 
 

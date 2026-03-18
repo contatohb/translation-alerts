@@ -1,6 +1,6 @@
 # Sistema de Alertas de Vagas de Tradução
 
-Sistema automatizado de alertas diários para vagas de tradução em ProZ.com e Translators Café.
+Sistema automatizado de alertas diários para vagas de tradução em ProZ.com, Translators Café e Translation Directory.
 
 ## Pares de Idiomas Monitorados
 
@@ -12,16 +12,20 @@ Sistema automatizado de alertas diários para vagas de tradução em ProZ.com e 
 
 ## Fontes Monitoradas
 
-- **ProZ.com** — [connect.proz.com/language-jobs](https://connect.proz.com/language-jobs)
-- **Translators Café** — [translatorscafe.com/cafe/SearchJobs.asp](https://www.translatorscafe.com/cafe/SearchJobs.asp)
+| Fonte | URL | Campos Extraídos |
+|-------|-----|-----------------|
+| **ProZ.com** | [connect.proz.com/language-jobs](https://connect.proz.com/language-jobs) | Título, par de idiomas, área, prazo, descrição, empresa |
+| **Translators Café** | [translatorscafe.com/cafe/SearchJobs.asp](https://www.translatorscafe.com/cafe/SearchJobs.asp) | Título, par de idiomas, tipo de serviço, data de publicação |
+| **Translation Directory** | [translationdirectory.com](https://www.translationdirectory.com/translation_jobs/) | Título, par, área, palavras, formato, preço/palavra, prazo, empresa, país, contato |
 
 ## Estrutura do Projeto
 
 ```
 translation-alerts/
 ├── scripts/
-│   ├── monitor_traducao.py    # Scraping e filtragem das vagas
-│   └── alerta_traducao.py     # Envio de email via Gmail MCP
+│   ├── monitor_traducao.py    # Scraping, filtragem e busca reversa de contatos
+│   ├── email_template.py      # Template HTML premium da newsletter
+│   └── alerta_traducao.py     # Orquestração e envio via Gmail MCP
 ├── .github/
 │   └── workflows/
 │       └── daily-translation-alert.yml  # Agendamento diário às 8h BRT
@@ -42,19 +46,35 @@ Para executar manualmente:
 
 ## Informações Incluídas nos Emails
 
-Para cada vaga encontrada, o email inclui:
+Para cada vaga encontrada, o email inclui os seguintes campos (quando disponíveis):
 
-- Título da vaga
-- Par de idiomas (origem → destino)
-- Área de especialização
-- Contagem de palavras (quando disponível)
-- Formato do arquivo (quando disponível)
-- Prazo de entrega (quando disponível)
-- Data de publicação
-- Fonte (ProZ.com ou Translators Café)
-- Link direto para a vaga
-- Contato (email, URL ou via plataforma)
-- Status do envio do CV
+| Campo | Fontes |
+|-------|--------|
+| Título da vaga | Todas |
+| Par de idiomas (origem → destino) | Todas |
+| Área de especialização | Todas |
+| Contagem de palavras | TD, ProZ |
+| Formato do arquivo | TD, ProZ |
+| Preço por palavra | TD |
+| País | TD |
+| Empresa | TD, ProZ, TC (quando no título) |
+| Pessoa de contato | TD |
+| Prazo de entrega | TD, ProZ |
+| Data de publicação | Todas |
+| Descrição detalhada | TD, ProZ |
+| Link direto para a vaga | Todas |
+| Contato direto (email/site) | TD (quando disponível) |
+| **Contato descoberto** (busca reversa) | TD (quando empresa conhecida) |
+
+## Busca Reversa de Contatos
+
+Quando uma vaga do **Translation Directory** não possui email de contato direto mas inclui o nome da empresa, o sistema tenta automaticamente:
+
+1. Construir a URL provável do site da empresa (ex.: `www.nomeempresa.com`)
+2. Visitar a homepage e extrair emails de contato
+3. Localizar a página de contato e extrair emails
+
+O resultado aparece na newsletter com destaque verde ("Contato Descoberto") e um botão de candidatura direta.
 
 ## Deduplicação
 
@@ -68,9 +88,6 @@ pip install requests beautifulsoup4 python-dotenv
 
 # Executar alerta
 cd scripts && python alerta_traducao.py
-
-# Forçar envio mesmo sem novidades
-cd scripts && python alerta_traducao.py --force-send
 ```
 
 ## Configuração de Email
