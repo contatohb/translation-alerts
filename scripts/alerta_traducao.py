@@ -101,35 +101,51 @@ def main():
     # Salvar histórico atualizado
     save_seen(seen_atualizado, SEEN_PATH)
 
-    # Gerar corpo do email
-    corpo = formatar_email_traducao(novas, erros)
-    print(corpo)
+    # Limitar a 50 vagas por email para evitar payloads muito grandes
+    MAX_VAGAS_POR_EMAIL = 50
+    lotes = [novas[i:i+MAX_VAGAS_POR_EMAIL] for i in range(0, max(len(novas), 1), MAX_VAGAS_POR_EMAIL)]
+    if not lotes:
+        lotes = [[]]
+    total_lotes = len(lotes)
 
-    # Definir assunto
-    if novas:
-        assunto = (
-            f"[Tradução] {len(novas)} nova(s) vaga(s) — "
-            f"{hoje.strftime('%d/%m/%Y')}"
-        )
-    else:
-        assunto = f"[Tradução] Nenhuma vaga nova — {hoje.strftime('%d/%m/%Y')}"
+    messages = []
+    for idx, lote in enumerate(lotes, 1):
+        # Gerar corpo do email
+        corpo = formatar_email_traducao(lote, erros if idx == 1 else [])
+        if idx == 1:
+            print(corpo[:2000])  # Preview do primeiro lote
 
-    # Salvar payload do email em arquivo para envio via Gmail MCP
-    payload = {
-        "messages": [{
+        # Definir assunto
+        if novas:
+            if total_lotes > 1:
+                assunto = (
+                    f"[Tradução] {len(novas)} nova(s) vaga(s) — "
+                    f"{hoje.strftime('%d/%m/%Y')} (parte {idx}/{total_lotes})"
+                )
+            else:
+                assunto = (
+                    f"[Tradução] {len(novas)} nova(s) vaga(s) — "
+                    f"{hoje.strftime('%d/%m/%Y')}"
+                )
+        else:
+            assunto = f"[Tradução] Nenhuma vaga nova — {hoje.strftime('%d/%m/%Y')}"
+
+        messages.append({
             "subject": assunto,
             "to": [RECIPIENT],
             "content": corpo,
-        }]
-    }
+        })
+
+    # Salvar payload do email em arquivo para envio via Gmail MCP
+    payload = {"messages": messages}
     with open(PAYLOAD_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
 
     with open(SUBJECT_PATH, "w", encoding="utf-8") as f:
-        f.write(assunto)
+        f.write(messages[0]["subject"])
 
-    logger.info(f"Payload do email salvo em: {PAYLOAD_PATH}")
-    logger.info(f"Assunto: {assunto}")
+    logger.info(f"Payload do email salvo em: {PAYLOAD_PATH} ({total_lotes} mensagem(ns))")
+    logger.info(f"Assunto: {messages[0]['subject']}")
     return 0
 
 

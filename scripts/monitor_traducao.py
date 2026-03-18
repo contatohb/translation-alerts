@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Monitor de vagas de tradução em ProZ.com e Translators Café.
+Monitor de vagas de tradução em ProZ.com, Translators Café e Translation Directory..
 
 Combinações de idiomas monitoradas:
   - Português ↔ Inglês  (PT/EN, EN/PT)
@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -575,6 +576,171 @@ def _extrair_data_publicacao(texto: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────
+# Scraping do Translation Directory
+# ─────────────────────────────────────────────────────────────────
+
+TD_URLS: Dict[str, str] = {
+    "EN-PT": "https://www.translationdirectory.com/translation_jobs/english_portuguese_translation_jobs.php",
+    "ES-PT": "https://www.translationdirectory.com/translation_jobs/spanish_portuguese_translation_jobs.php",
+    "EN-ES": "https://www.translationdirectory.com/translation_jobs/english_spanish_translation_jobs.php",
+}
+
+
+def _scrape_translation_directory() -> Tuple[List[Dict], List[str]]:
+    """
+    Faz scraping das vagas do Translation Directory.
+    Cada vaga tem um link /job_NNNNN.php e campos Source/Target language estruturados.
+    Retorna (lista_vagas, lista_erros).
+    """
+    vagas: List[Dict] = []
+    erros: List[str] = []
+    seen_urls: set = set()
+
+    for par_label, url in TD_URLS.items():
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            resp.raise_for_status()
+        except Exception as exc:
+            erros.append(f"Translation Directory ({par_label}): erro de acesso — {exc}")
+            continue
+
+        soup = BeautifulSoup(resp.content, "html.parser")
+
+        # Cada vaga tem um link /job_NNNNN.php
+        job_links = [a for a in soup.find_all("a", href=True)
+                     if re.match(r'^/job_\d+\.php$', a.get("href", ""))]
+
+        for a in job_links:
+            href = a.get("href", "")
+            job_url = f"https://www.translationdirectory.com{href}"
+
+            if job_url in seen_urls:
+                continue
+            seen_urls.add(job_url)
+
+            titulo = a.get_text(strip=True)
+            if not titulo or len(titulo) < 5:
+                continue
+
+            # Extrair bloco de informações após o link (Source/Target/Details/Deadline/Posted)
+            parent_p = a.find_parent("p")
+            bloco_texto = ""
+            source_lang = ""
+            target_lang = ""
+            detalhes = ""
+            prazo = ""
+            data_pub = ""
+            contato_email = ""
+            contato_url = ""
+
+            if parent_p:
+                # Pegar o próximo parágrafo que contém Source/Target
+                next_p = parent_p.find_next_sibling("p")
+                if next_p:
+                    bloco_texto = next_p.get_text(" ", strip=True)
+
+                    # Source language
+                    m_src = re.search(r'Source language\(s\):\s*([^\n]+)', bloco_texto, re.IGNORECASE)
+                    if m_src:
+                        source_lang = m_src.group(1).strip()
+
+                    # Target language
+                    m_tgt = re.search(r'Target language\(s\):\s*([^\n]+)', bloco_texto, re.IGNORECASE)
+                    if m_tgt:
+                        target_lang = m_tgt.group(1).strip()
+
+                    # Details
+                    m_det = re.search(r'Details of the project:\s*(.+?)(?:This job is:|$)', bloco_texto, re.IGNORECASE | re.DOTALL)
+                    if m_det:
+                        detalhes = m_det.group(1).strip()[:300]
+
+                    # Deadline
+                    m_dl = re.search(r'Deadline for applying:\s*([^\n]+)', bloco_texto, re.IGNORECASE)
+                    if m_dl:
+                        prazo = m_dl.group(1).strip()
+
+                    # Posted on
+                    m_post = re.search(r'Posted on:\s*([^\n]+)', bloco_texto, re.IGNORECASE)
+                    if m_post:
+                        data_pub = m_post.group(1).strip()
+
+                    # Email de contato
+                    m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', bloco_texto)
+                    if m_email:
+                        contato_email = m_email.group(0)
+
+                    # URL de contato
+                    m_url = re.search(r'https?://[^\s<>"]+', bloco_texto)
+                    if m_url and m_url.group(0) != job_url:
+                        contato_url = m_url.group(0)
+
+            # Determinar par de idiomas relevante
+            # O par_label já indica o par (EN-PT, ES-PT, EN-ES)
+            # Mas vamos verificar se os idiomas Source/Target confirmam
+            origem_code, destino_code = "", ""
+
+            # Tentar extrair do Source/Target
+            if source_lang and target_lang:
+                # Source pode ser "All languages" — nesse caso usar o par_label
+                if source_lang.lower() != "all languages":
+                    origem_code = _normalizar_idioma(source_lang.split(",")[0].strip())
+                if target_lang.lower() != "all languages":
+                    # Target pode ter múltiplos idiomas — verificar se algum é relevante
+                    for tgt_item in re.split(r'[,;]', target_lang):
+                        tgt_code = _normalizar_idioma(tgt_item.strip())
+                        if tgt_code:
+                            destino_code = tgt_code
+                            break
+
+            # Fallback: usar o par_label
+            if not origem_code or not destino_code:
+                parts = par_label.split("-")
+                if len(parts) == 2:
+                    origem_code = parts[0]
+                    destino_code = parts[1]
+
+            if not _par_relevante(origem_code, destino_code):
+                # Tentar o par invertido
+                if _par_relevante(destino_code, origem_code):
+                    origem_code, destino_code = destino_code, origem_code
+                else:
+                    continue
+
+            tipo_contato = "email" if contato_email else ("URL" if contato_url else "Translation Directory")
+            link_contato = contato_email or contato_url or job_url
+
+            # Filtrar apenas vagas dos últimos 30 dias
+            if data_pub:
+                try:
+                    dt_pub = datetime.strptime(data_pub.strip(), "%A, %d %b %Y, %H:%M:%S")
+                    if (datetime.now() - dt_pub).days > 30:
+                        continue
+                except Exception:
+                    pass  # Se não conseguir parsear, incluir a vaga
+
+            vagas.append({
+                "titulo": titulo,
+                "idioma_origem": origem_code,
+                "idioma_destino": destino_code,
+                "area": _extrair_area(bloco_texto),
+                "contagem_palavras": _extrair_contagem_palavras(bloco_texto),
+                "formato": _extrair_formato(bloco_texto),
+                "prazo": prazo,
+                "tipo_contato": tipo_contato,
+                "link_contato": link_contato,
+                "link_vaga": job_url,
+                "fonte": "Translation Directory",
+                "data_publicacao": data_pub,
+                "detalhes": detalhes,
+            })
+
+        time.sleep(SLEEP)
+
+    logger.info(f"Translation Directory: {len(vagas)} vaga(s) relevante(s) encontrada(s)")
+    return vagas, erros
+
+
+# ─────────────────────────────────────────────────────────────────
 # Deduplicação
 # ─────────────────────────────────────────────────────────────────
 
@@ -665,7 +831,7 @@ def formatar_email_traducao(vagas: List[Dict], erros: List[str]) -> str:
     linhas.append("=" * 70)
     linhas.append("Sistema de alertas de tradução — Hudson Borges")
     linhas.append("Pares monitorados: PT↔EN | PT↔ES | EN↔ES")
-    linhas.append("Fontes: ProZ.com | Translators Café")
+    linhas.append("Fontes: ProZ.com | Translators Café | Translation Directory")
 
     return "\n".join(linhas)
 
@@ -688,6 +854,11 @@ def buscar_vagas() -> Tuple[List[Dict], List[str]]:
     vagas_tc, erros_tc = _scrape_translators_cafe()
     todas_vagas.extend(vagas_tc)
     todos_erros.extend(erros_tc)
+
+    # Translation Directory
+    vagas_td, erros_td = _scrape_translation_directory()
+    todas_vagas.extend(vagas_td)
+    todos_erros.extend(erros_td)
 
     logger.info(f"Total geral: {len(todas_vagas)} vaga(s) | {len(todos_erros)} erro(s)")
     return todas_vagas, todos_erros
