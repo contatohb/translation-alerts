@@ -21,29 +21,19 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────
 
 def _criar_driver():
-    """Cria e retorna um WebDriver Chromium headless com configurações anti-detecção.
+    """Cria e retorna um WebDriver Chrome headless com configurações anti-detecção.
     
-    Usa webdriver-manager para instalar automaticamente o chromedriver compatível
-    com a versão do Chrome/Chromium instalada no sistema.
+    Usa chrome-for-testing (binário standalone) via selenium-manager ou webdriver-manager.
+    Funciona em ambientes CI/CD restritos como GitHub Actions.
     """
     import subprocess
     import sys
+    import tempfile
+    import zipfile
+    import urllib.request
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
-
-    # Auto-instalar webdriver-manager se necessário
-    try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        from webdriver_manager.core.os_manager import ChromeType
-    except ImportError:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "webdriver-manager"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        from webdriver_manager.chrome import ChromeDriverManager
-        from webdriver_manager.core.os_manager import ChromeType
 
     opts = Options()
     opts.add_argument("--headless=new")
@@ -58,48 +48,66 @@ def _criar_driver():
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
-    # Flags necessárias para funcionar em ambientes CI/CD restritos (GitHub Actions)
-    opts.add_argument("--remote-debugging-port=0")
     opts.add_argument("--disable-extensions")
     opts.add_argument("--disable-infobars")
-    opts.add_argument("--disable-software-rasterizer")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--no-default-browser-check")
     opts.add_argument("--disable-background-networking")
     opts.add_argument("--disable-default-apps")
     opts.add_argument("--disable-sync")
-    opts.add_argument("--no-first-run")
-    opts.add_argument("--no-default-browser-check")
-    opts.add_argument("--single-process")  # Necessário em ambientes com recursos limitados
 
-    # Localizar o binário do Chromium e instalar chromedriver compatível
-    chromium_binary = None
-    for binary in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome"]:
-        if os.path.exists(binary):
-            chromium_binary = binary
-            break
+    # ── Estratégia 1: usar selenium-manager embutido no Selenium 4.6+ ──────────────
+    # O selenium-manager baixa automaticamente o Chrome for Testing + chromedriver
+    # compatíveis sem depender do Chromium do sistema (que pode ser um snap wrapper).
+    try:
+        logger.info("Selenium: tentando iniciar com selenium-manager (Chrome for Testing)...")
+        # Não definir binary_location — deixa o selenium-manager decidir
+        driver = webdriver.Chrome(options=opts)
+        driver.execute_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        logger.info("Selenium: driver iniciado com sucesso via selenium-manager.")
+        return driver
+    except Exception as e1:
+        logger.warning(f"Selenium (selenium-manager): falhou — {e1}")
 
-    if chromium_binary:
-        opts.binary_location = chromium_binary
-        try:
-            # Tentar com ChromeType.CHROMIUM para obter o driver correto
+    # ── Estratégia 2: webdriver-manager com Chrome for Testing ─────────────────────
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        logger.info("Selenium: tentando com webdriver-manager (ChromeDriverManager)...")
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=opts)
+        driver.execute_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        logger.info("Selenium: driver iniciado com sucesso via webdriver-manager.")
+        return driver
+    except Exception as e2:
+        logger.warning(f"Selenium (webdriver-manager): falhou — {e2}")
+
+    # ── Estratégia 3: Chromium do sistema (apt) ────────────────────────────────────
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        from webdriver_manager.core.os_manager import ChromeType
+        chromium_binary = None
+        for binary in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome"]:
+            if os.path.exists(binary):
+                chromium_binary = binary
+                break
+        if chromium_binary:
+            logger.info(f"Selenium: tentando com Chromium do sistema ({chromium_binary})...")
+            opts.binary_location = chromium_binary
             service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-        except Exception:
-            # Fallback: sem especificar o tipo (usa Chrome padrão)
-            try:
-                service = Service(ChromeDriverManager().install())
-            except Exception:
-                service = Service()  # Usa o chromedriver do PATH
-    else:
-        try:
-            service = Service(ChromeDriverManager().install())
-        except Exception:
-            service = Service()
+            driver = webdriver.Chrome(service=service, options=opts)
+            driver.execute_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            logger.info("Selenium: driver iniciado com sucesso via Chromium do sistema.")
+            return driver
+    except Exception as e3:
+        logger.warning(f"Selenium (Chromium sistema): falhou — {e3}")
 
-    driver = webdriver.Chrome(service=service, options=opts)
-    # Remover flag webdriver do navigator
-    driver.execute_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
-    return driver
+    raise RuntimeError("Não foi possível iniciar o WebDriver Chrome por nenhuma das estratégias disponíveis.")
 
 
 def _aguardar_pagina(driver, timeout: int = 15) -> None:
