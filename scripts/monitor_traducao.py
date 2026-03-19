@@ -90,6 +90,8 @@ _EMAILS_IGNORAR = {
     "privacy", "gdpr", "w3.org", "schema.org", "google", "facebook",
     "twitter", "linkedin", "youtube", "apple", "microsoft", "amazon",
     "cloudflare", "wordpress", "jquery", "bootstrap", "fontawesome",
+    "spoofing", "abuse", "spam", "phishing", "security", "postmaster",
+    "webmaster", "hostmaster", "mailer-daemon", "bounce", "unsubscribe",
 }
 
 
@@ -288,6 +290,78 @@ def _emails_validos(emails: List[str]) -> List[str]:
     ]
 
 
+# Domínios suspeitos, de parking ou sem conteúdo real
+_DOMINIOS_SUSPEITOS = {
+    "godaddy.com", "namecheap.com", "sedo.com", "dan.com", "hugedomains.com",
+    "afternic.com", "parkingcrew.net", "bodis.com", "above.com", "undeveloped.com",
+    "domainmarket.com", "buydomains.com", "flippa.com", "brandbucket.com",
+    "squarespace.com", "wix.com", "weebly.com", "wordpress.com",
+    "blogspot.com", "tumblr.com", "medium.com",
+}
+
+# Indicadores de página em branco, parking ou erro
+_INDICADORES_INVALIDOS = [
+    "domain for sale", "buy this domain", "this domain is for sale",
+    "domain parking", "parked domain", "coming soon", "under construction",
+    "website coming soon", "em construção", "em breve",
+    "403 forbidden", "404 not found", "access denied",
+    "this site can't be reached", "err_connection",
+    "godaddy", "namecheap", "sedo.com", "dan.com",
+]
+
+
+def _validar_site(url: str, timeout: int = 10) -> Dict[str, object]:
+    """
+    Acessa o site e verifica se é real, funcional e não suspeito.
+    Retorna dict com: ok (bool), url_final (str), soup (BeautifulSoup|None),
+    motivo_descarte (str|None).
+    """
+    resultado = {"ok": False, "url_final": url, "soup": None, "motivo_descarte": None}
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        url_final = r.url
+        resultado["url_final"] = url_final
+
+        # Verificar status HTTP
+        if r.status_code in (403, 404, 410, 500, 502, 503):
+            resultado["motivo_descarte"] = f"HTTP {r.status_code}"
+            return resultado
+
+        if r.status_code != 200:
+            resultado["motivo_descarte"] = f"HTTP {r.status_code}"
+            return resultado
+
+        # Verificar domínio suspeito
+        dominio_final = urlparse(url_final).netloc.lower().replace("www.", "")
+        if any(d in dominio_final for d in _DOMINIOS_SUSPEITOS):
+            resultado["motivo_descarte"] = f"domínio suspeito ({dominio_final})"
+            return resultado
+
+        # Verificar conteúdo mínimo
+        texto = r.text.lower()
+        if len(r.text) < 200:
+            resultado["motivo_descarte"] = "página em branco ou muito curta"
+            return resultado
+
+        for indicador in _INDICADORES_INVALIDOS:
+            if indicador in texto:
+                resultado["motivo_descarte"] = f"conteúdo suspeito: '{indicador}'"
+                return resultado
+
+        # Site válido
+        resultado["ok"] = True
+        resultado["soup"] = BeautifulSoup(r.content, "html.parser")
+        return resultado
+
+    except requests.exceptions.ConnectionError:
+        resultado["motivo_descarte"] = "conexão recusada"
+    except requests.exceptions.Timeout:
+        resultado["motivo_descarte"] = "timeout"
+    except Exception as exc:
+        resultado["motivo_descarte"] = f"erro: {exc}"
+    return resultado
+
+
 def _extrair_emails_pagina(url: str, timeout: int = 8) -> List[str]:
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
@@ -306,7 +380,8 @@ def _encontrar_pagina_contato(base_url: str, soup: BeautifulSoup = None, timeout
             if r.status_code != 200:
                 return None
             soup = BeautifulSoup(r.content, "html.parser")
-        contact_kws = ['contact', 'contato', 'kontakt', 'get-in-touch', 'reach-us', 'reach-out']
+        contact_kws = ['contact', 'contato', 'kontakt', 'get-in-touch', 'reach-us',
+                       'reach-out', 'about', 'sobre', 'team', 'equipe']
         for a in soup.find_all("a", href=True):
             href = a.get("href", "").lower()
             text = a.get_text(strip=True).lower()
@@ -332,46 +407,76 @@ def _construir_url_empresa(nome_empresa: str) -> Optional[str]:
 def buscar_contato_empresa(nome_empresa: str, url_empresa: str = "", pais: str = "") -> Dict[str, str]:
     """
     Tenta encontrar email e site de contato de uma empresa.
-    Prioriza url_empresa se fornecida; caso contrário, constrói URL a partir do nome.
+    Valida o site antes de incluir: sites em branco, quebrados ou suspeitos são descartados.
+    Retorna dict com: site (str), email (str), fonte_busca (str), valido (bool).
+    Retorna {} se o site for inválido ou não encontrado.
     """
     if not nome_empresa and not url_empresa:
         return {}
 
-    resultado = {}
-
-    # Usar URL fornecida ou construir a partir do nome
+    # Determinar URL a testar
     url_tentativa = url_empresa if url_empresa else _construir_url_empresa(nome_empresa)
     if not url_tentativa:
         return {}
 
-    try:
-        r = requests.get(url_tentativa, headers=HEADERS, timeout=8, allow_redirects=True)
-        if r.status_code == 200:
-            resultado["site"] = r.url
-            soup = BeautifulSoup(r.content, "html.parser")
+    # Validar o site
+    validacao = _validar_site(url_tentativa)
+    if not validacao["ok"]:
+        logger.debug(
+            f"Site descartado para '{nome_empresa}' ({url_tentativa}): "
+            f"{validacao['motivo_descarte']}"
+        )
+        return {}  # Site inválido — vaga não entra na newsletter
 
-            # Buscar emails na homepage
-            emails = _emails_validos(
-                re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', r.text)
-            )
-            if emails:
-                resultado["email"] = emails[0]
-                resultado["fonte_busca"] = "homepage"
+    soup = validacao["soup"]
+    url_final = validacao["url_final"]
+    resultado = {"site": url_final, "valido": True}
+
+    # 1. Buscar emails diretamente na homepage
+    emails_homepage = _emails_validos(
+        re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', soup.get_text())
+    )
+    if emails_homepage:
+        resultado["email"] = emails_homepage[0]
+        resultado["fonte_busca"] = "homepage"
+        return resultado
+
+    # 2. Buscar links mailto: explícitos
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        if href.startswith("mailto:"):
+            email = href.replace("mailto:", "").split("?")[0].strip()
+            if email and "@" in email and not any(s in email.lower() for s in _EMAILS_IGNORAR):
+                resultado["email"] = email
+                resultado["fonte_busca"] = "mailto homepage"
                 return resultado
 
-            # Buscar página de contato
-            contact_url = _encontrar_pagina_contato(resultado["site"], soup)
-            if contact_url:
-                emails_contato = _extrair_emails_pagina(contact_url)
-                if emails_contato:
-                    resultado["email"] = emails_contato[0]
-                    resultado["fonte_busca"] = "página de contato"
-                    return resultado
+    # 3. Buscar página de contato
+    contact_url = _encontrar_pagina_contato(url_final, soup)
+    if contact_url:
+        emails_contato = _extrair_emails_pagina(contact_url)
+        if emails_contato:
+            resultado["email"] = emails_contato[0]
+            resultado["fonte_busca"] = "página de contato"
+            return resultado
+        # Buscar mailto na página de contato
+        try:
+            r_c = requests.get(contact_url, headers=HEADERS, timeout=8, allow_redirects=True)
+            if r_c.status_code == 200:
+                soup_c = BeautifulSoup(r_c.content, "html.parser")
+                for a in soup_c.find_all("a", href=True):
+                    href = a.get("href", "")
+                    if href.startswith("mailto:"):
+                        email = href.replace("mailto:", "").split("?")[0].strip()
+                        if email and "@" in email and not any(s in email.lower() for s in _EMAILS_IGNORAR):
+                            resultado["email"] = email
+                            resultado["fonte_busca"] = "mailto página de contato"
+                            return resultado
+        except Exception:
+            pass
 
-            resultado["fonte_busca"] = "site (sem email)"
-    except Exception:
-        pass
-
+    # Site válido mas sem email encontrado
+    resultado["fonte_busca"] = "site (sem email)"
     return resultado
 
 
@@ -1189,19 +1294,86 @@ def filtrar_novas_vagas(
 # Ponto de entrada
 # ─────────────────────────────────────────────────────────────────
 
+def _usar_selenium_disponivel() -> bool:
+    """Verifica se o Selenium e o Chromium estão disponíveis."""
+    try:
+        import selenium  # noqa: F401
+        import os
+        for binary in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome"]:
+            if os.path.exists(binary):
+                return True
+        return False
+    except ImportError:
+        return False
+
+
 def buscar_vagas() -> Tuple[List[Dict], List[str]]:
-    """Busca vagas em todas as fontes e retorna (vagas, erros)."""
+    """Busca vagas em todas as fontes e retorna (vagas, erros).
+    
+    Estratégia de fallback automático:
+    - Tenta primeiro com requests (rápido, sem overhead)
+    - Se retornar 0 vagas ou erro de acesso, tenta com Selenium headless
+    - Selenium contorna bloqueios de IP de datacenter (GitHub Actions)
+    """
     todas_vagas: List[Dict] = []
     todos_erros: List[str] = []
+    selenium_ok = _usar_selenium_disponivel()
 
+    # ── ProZ.com ──────────────────────────────────────────────────
     vagas_proz, erros_proz = _scrape_proz()
+    # Fallback Selenium se requests retornou 0 vagas ou erro de bloqueio
+    if selenium_ok and (len(vagas_proz) == 0 or any(
+        "bloqueado" in e.lower() or "403" in e or "encoding" in e.lower() or "decode" in e.lower()
+        for e in erros_proz
+    )):
+        logger.info("ProZ.com: tentando scraper Selenium como fallback...")
+        try:
+            from selenium_scrapers import scrape_proz_selenium
+            vagas_proz_sel, erros_proz_sel = scrape_proz_selenium(
+                _extrair_par_idiomas_titulo, _par_relevante, _extrair_area,
+                _extrair_contagem_palavras, _extrair_formato, _extrair_preco,
+                _extrair_empresa, _formatar_data, buscar_contato_empresa,
+            )
+            if len(vagas_proz_sel) > len(vagas_proz):
+                vagas_proz = vagas_proz_sel
+                erros_proz = erros_proz_sel
+                logger.info(f"ProZ.com: Selenium retornou {len(vagas_proz)} vaga(s)")
+            else:
+                erros_proz.extend(erros_proz_sel)
+        except Exception as exc:
+            erros_proz.append(f"ProZ.com (Selenium fallback): erro — {exc}")
+            logger.error(f"ProZ.com Selenium fallback: {exc}")
     todas_vagas.extend(vagas_proz)
     todos_erros.extend(erros_proz)
 
+    # ── Translators Café ─────────────────────────────────────────
     vagas_tc, erros_tc = _scrape_translators_cafe()
+    # Fallback Selenium se requests retornou 0 vagas ou erro de bloqueio
+    if selenium_ok and (len(vagas_tc) == 0 or any(
+        "bloqueado" in e.lower() or "403" in e or "login" in e.lower()
+        for e in erros_tc
+    )):
+        logger.info("Translators Café: tentando scraper Selenium como fallback...")
+        try:
+            from selenium_scrapers import scrape_translators_cafe_selenium
+            vagas_tc_sel, erros_tc_sel = scrape_translators_cafe_selenium(
+                _parse_par_tc, _extrair_par_idiomas_titulo, _par_relevante,
+                _extrair_area, _extrair_contagem_palavras, _extrair_formato,
+                _extrair_preco, _extrair_prazo, _formatar_data, buscar_contato_empresa,
+            )
+            if len(vagas_tc_sel) > len(vagas_tc):
+                vagas_tc = vagas_tc_sel
+                erros_tc = erros_tc_sel
+                logger.info(f"Translators Café: Selenium retornou {len(vagas_tc)} vaga(s)")
+            else:
+                erros_tc.extend(erros_tc_sel)
+        except Exception as exc:
+            erros_tc.append(f"Translators Café (Selenium fallback): erro — {exc}")
+            logger.error(f"Translators Café Selenium fallback: {exc}")
     todas_vagas.extend(vagas_tc)
     todos_erros.extend(erros_tc)
 
+    # ── Translation Directory ────────────────────────────────────
     vagas_td, erros_td = _scrape_translation_directory()
     todas_vagas.extend(vagas_td)
     todos_erros.extend(erros_td)

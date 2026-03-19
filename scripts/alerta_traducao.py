@@ -475,17 +475,45 @@ def main():
     else:
         logger.error("Falha no envio do alerta")
 
+    # ── Auditoria pós-envio com autocorreção automática ───────────
+    try:
+        from auditoria import executar_auditoria_completa
+        resultado_auditoria = executar_auditoria_completa(
+            vagas_originais=novas,
+            erros_originais=erros,
+            html_original=html,
+            email_enviado=enviado,
+            assunto=assunto,
+            texto_simples=texto_simples,
+            enviar_smtp_fn=enviar_smtp,
+            sb=sb,
+        )
+        novas = resultado_auditoria["vagas_finais"]
+        erros = resultado_auditoria["erros_finais"]
+        html = resultado_auditoria["html_final"]
+        enviado = resultado_auditoria["email_enviado"]
+    except ImportError:
+        logger.warning("Módulo de auditoria não encontrado — pulando auditoria")
+    except Exception as exc:
+        logger.error(f"Erro na auditoria pós-envio: {exc}")
+
     # Registrar execução no Supabase
+    por_fonte_final = Counter(v.get("fonte", "") for v in novas)
+    n_contato_final = sum(
+        1 for v in novas
+        if v.get("contato_descoberto", {}).get("email")
+        or v.get("contato_descoberto", {}).get("site")
+    )
     if sb:
         sb.registrar_execucao({
             "vagas_novas": len(novas),
-            "vagas_proz": por_fonte.get("ProZ.com", 0),
-            "vagas_tc": por_fonte.get("Translators Café", 0),
-            "vagas_td": por_fonte.get("Translation Directory", 0),
-            "contatos_descobertos": n_contato,
+            "vagas_proz": por_fonte_final.get("ProZ.com", 0),
+            "vagas_tc": por_fonte_final.get("Translators Café", 0),
+            "vagas_td": por_fonte_final.get("Translation Directory", 0),
+            "contatos_descobertos": n_contato_final,
             "email_enviado": enviado,
             "erro": "\n".join(erros) if erros else None,
-            "duracao_segundos": duracao,
+            "duracao_segundos": round(time.time() - inicio_total, 1),
         })
 
     return 0 if enviado else 1
