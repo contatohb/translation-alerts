@@ -45,11 +45,25 @@ SLEEP   = 0.8
 # ─────────────────────────────────────────────────────────────────
 # Credenciais do Translators Café
 # ─────────────────────────────────────────────────────────────────
-TC_USERNAME  = "hudsonborges"
-TC_PASSWORD  = "Raios25_"
-TC_LOGIN_URL = "https://www.translatorscafe.com/cafe/login.asp"
-TC_JOBS_URL  = "https://www.translatorscafe.com/cafe/SearchJobs.asp"
-TC_BASE_URL  = "https://www.translatorscafe.com"
+import os as _os
+TC_USERNAME   = "hudsonborges"
+TC_PASSWORD   = "Raios25_"
+TC_LOGIN_URL  = "https://www.translatorscafe.com/cafe/login.asp"
+TC_JOBS_URL   = "https://www.translatorscafe.com/cafe/SearchJobs.asp?Mode=Selected"
+TC_BASE_URL   = "https://www.translatorscafe.com"
+TC_RSS_URL    = "https://www.translatorscafe.com/tcUtils/EN/jobs/rss.aspx"
+# Cookie LGN persistente do TC — injetado via secret TC_COOKIE_LGN no GitHub Actions
+TC_COOKIE_LGN = _os.environ.get("TC_COOKIE_LGN", "").strip()
+
+# Pares de idiomas do ProZ com filtro de idioma (sl=source, tl=target)
+PROZ_LANG_PAIRS = [
+    ("por", "eng"),  # PT → EN
+    ("eng", "por"),  # EN → PT
+    ("por", "esl"),  # PT → ES
+    ("esl", "por"),  # ES → PT
+    ("eng", "esl"),  # EN → ES
+    ("esl", "eng"),  # ES → EN
+]
 
 # ─────────────────────────────────────────────────────────────────
 # Mapeamento de idiomas
@@ -490,183 +504,185 @@ def buscar_contato_empresa(nome_empresa: str, url_empresa: str = "", pais: str =
 # ─────────────────────────────────────────────────────────────────
 
 def _scrape_proz() -> Tuple[List[Dict], List[str]]:
-    """Faz scraping da página pública de vagas do ProZ.com."""
+    """Faz scraping das vagas do ProZ.com usando URLs filtradas por par de idiomas."""
     vagas: List[Dict] = []
     erros: List[str] = []
-    url = "https://connect.proz.com/language-jobs"
-
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
-    except Exception as exc:
-        erros.append(f"ProZ.com: erro de acesso — {exc}")
-        return vagas, erros
-
-    soup = BeautifulSoup(resp.content, "html.parser")
     seen_urls: set = set()
 
-    for a in soup.find_all("a", class_="job_title_link", href=True):
-        href = a.get("href", "")
-        titulo = a.get_text(strip=True)
-
-        if not titulo or len(titulo) < 8:
+    for sl, tl in PROZ_LANG_PAIRS:
+        url = f"https://connect.proz.com/language-jobs?sl={sl}&tl={tl}"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            resp.raise_for_status()
+        except Exception as exc:
+            erros.append(f"ProZ.com ({sl}→{tl}): erro de acesso — {exc}")
             continue
-        if not re.search(r'proz\.com/translation-jobs/\d+', href):
-            continue
+        time.sleep(SLEEP)
 
-        job_url = href if href.startswith("http") else f"https://www.proz.com{href}"
-        if job_url in seen_urls:
-            continue
-        seen_urls.add(job_url)
+        soup = BeautifulSoup(resp.content, "html.parser")
 
-        # Descrição completa via data-content
-        descricao_raw = unescape(a.get("data-content", ""))
-        descricao = re.sub(r'<[^>]+>', ' ', descricao_raw).strip()
-        descricao = re.sub(r'\s+', ' ', descricao)[:600]
+        for a in soup.find_all("a", class_="job_title_link", href=True):
+            href = a.get("href", "")
+            titulo = a.get_text(strip=True)
 
-        # Subir para o jobs__result-wrap
-        result_wrap = None
-        parent = a.parent
-        for _ in range(20):
-            if parent and parent.get("class") and any("result-wrap" in c for c in parent.get("class", [])):
-                result_wrap = parent
-                break
-            parent = parent.parent if parent else None
+            if not titulo or len(titulo) < 8:
+                continue
+            if not re.search(r'proz\.com/translation-jobs/\d+', href):
+                continue
 
-        # Pares de idiomas, área e palavras via tooltips
-        pares_relevantes: List[Tuple[str, str]] = []
-        area = ""
-        contagem_palavras = ""
-        formato = ""
-        data_pub = ""
-        prazo = ""
+            job_url = href if href.startswith("http") else f"https://www.proz.com{href}"
+            if job_url in seen_urls:
+                continue
+            seen_urls.add(job_url)
 
-        if result_wrap:
-            full_text = result_wrap.get_text(separator="\n", strip=True)
+            # Descrição completa via data-content
+            descricao_raw = unescape(a.get("data-content", ""))
+            descricao = re.sub(r'<[^>]+>', ' ', descricao_raw).strip()
+            descricao = re.sub(r'\s+', ' ', descricao)[:600]
 
-            # Palavras e formato do container
-            m_wc = re.search(r'Word count:\s*([\d,\.]+)', full_text, re.IGNORECASE)
-            if m_wc:
-                contagem_palavras = m_wc.group(1).replace(",", ".")
-            m_fmt = re.search(r'Format:\s*([^\n]+)', full_text, re.IGNORECASE)
-            if m_fmt:
-                formato = m_fmt.group(1).strip()
+            # Subir para o jobs__result-wrap
+            result_wrap = None
+            parent = a.parent
+            for _ in range(20):
+                if parent and parent.get("class") and any("result-wrap" in c for c in parent.get("class", [])):
+                    result_wrap = parent
+                    break
+                parent = parent.parent if parent else None
 
-            # Data de publicação
-            m_posted = re.search(r'Posted\s+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})', full_text, re.IGNORECASE)
-            if m_posted:
-                data_pub = _formatar_data(m_posted.group(1).strip())
+            # Pares de idiomas, área e palavras via tooltips
+            pares_relevantes: List[Tuple[str, str]] = []
+            area = ""
+            contagem_palavras = ""
+            formato = ""
+            data_pub = ""
+            prazo = ""
 
-            # Prazo via data-title="Delivery date"
-            delivery_el = result_wrap.find(attrs={"data-title": "Delivery date"})
-            if delivery_el:
-                parent_el = delivery_el.parent
-                if parent_el:
-                    prazo_text = parent_el.get_text(strip=True)
-                    prazo = _formatar_data(prazo_text)
+            if result_wrap:
+                full_text = result_wrap.get_text(separator="\n", strip=True)
 
-            # Prazo via "Open for N more days"
-            if not prazo:
-                m_days = re.search(r'Open\s+for\s+(\d+)\s+more\s+days?', full_text, re.IGNORECASE)
-                if m_days:
-                    prazo = (datetime.now() + timedelta(days=int(m_days.group(1)))).strftime("%d/%m/%Y")
+                # Palavras e formato do container
+                m_wc = re.search(r'Word count:\s*([\d,\.]+)', full_text, re.IGNORECASE)
+                if m_wc:
+                    contagem_palavras = m_wc.group(1).replace(",", ".")
+                m_fmt = re.search(r'Format:\s*([^\n]+)', full_text, re.IGNORECASE)
+                if m_fmt:
+                    formato = m_fmt.group(1).strip()
 
-            # Tooltips: pares de idiomas e áreas
-            for span in result_wrap.find_all("span", attrs={"data-toggle": "tooltip"}):
-                title_attr = unescape(span.get("title", ""))
-                text_span = span.get_text(strip=True)
+                # Data de publicação
+                m_posted = re.search(r'Posted\s+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})', full_text, re.IGNORECASE)
+                if m_posted:
+                    data_pub = _formatar_data(m_posted.group(1).strip())
 
-                if "language pair" in text_span.lower():
-                    langs = re.findall(r'<li>([^<]+)</li>', title_attr)
-                    for lang_pair in langs:
-                        src, tgt = _extrair_par_idiomas_titulo(lang_pair)
+                # Prazo via data-title="Delivery date"
+                delivery_el = result_wrap.find(attrs={"data-title": "Delivery date"})
+                if delivery_el:
+                    parent_el = delivery_el.parent
+                    if parent_el:
+                        prazo_text = parent_el.get_text(strip=True)
+                        prazo = _formatar_data(prazo_text)
+
+                # Prazo via "Open for N more days"
+                if not prazo:
+                    m_days = re.search(r'Open\s+for\s+(\d+)\s+more\s+days?', full_text, re.IGNORECASE)
+                    if m_days:
+                        prazo = (datetime.now() + timedelta(days=int(m_days.group(1)))).strftime("%d/%m/%Y")
+
+                # Tooltips: pares de idiomas e áreas
+                for span in result_wrap.find_all("span", attrs={"data-toggle": "tooltip"}):
+                    title_attr = unescape(span.get("title", ""))
+                    text_span = span.get_text(strip=True)
+
+                    if "language pair" in text_span.lower():
+                        langs = re.findall(r'<li>([^<]+)</li>', title_attr)
+                        for lang_pair in langs:
+                            src, tgt = _extrair_par_idiomas_titulo(lang_pair)
+                            if _par_relevante(src, tgt):
+                                pares_relevantes.append((src, tgt))
+
+                    elif "field" in text_span.lower():
+                        fields = re.findall(r'<li>([^<]+)</li>', title_attr)
+                        area = ", ".join(fields[:3])
+
+                # Par de idiomas direto no li (sem tooltip)
+                for li in result_wrap.find_all("li"):
+                    if not li.find("span"):
+                        text_li = li.get_text(strip=True)
+                        src, tgt = _extrair_par_idiomas_titulo(text_li)
                         if _par_relevante(src, tgt):
                             pares_relevantes.append((src, tgt))
 
-                elif "field" in text_span.lower():
-                    fields = re.findall(r'<li>([^<]+)</li>', title_attr)
-                    area = ", ".join(fields[:3])
+            # Fallback: par do título e descrição
+            if not pares_relevantes:
+                src, tgt = _extrair_par_idiomas_titulo(titulo)
+                if _par_relevante(src, tgt):
+                    pares_relevantes.append((src, tgt))
+            if not pares_relevantes:
+                src, tgt = _extrair_par_idiomas_titulo(descricao)
+                if _par_relevante(src, tgt):
+                    pares_relevantes.append((src, tgt))
 
-            # Par de idiomas direto no li (sem tooltip)
-            for li in result_wrap.find_all("li"):
-                if not li.find("span"):
-                    text_li = li.get_text(strip=True)
-                    src, tgt = _extrair_par_idiomas_titulo(text_li)
-                    if _par_relevante(src, tgt):
-                        pares_relevantes.append((src, tgt))
+            if not pares_relevantes:
+                continue
 
-        # Fallback: par do título e descrição
-        if not pares_relevantes:
-            src, tgt = _extrair_par_idiomas_titulo(titulo)
-            if _par_relevante(src, tgt):
-                pares_relevantes.append((src, tgt))
-        if not pares_relevantes:
-            src, tgt = _extrair_par_idiomas_titulo(descricao)
-            if _par_relevante(src, tgt):
-                pares_relevantes.append((src, tgt))
+            # Deduplicar pares
+            pares_unicos = list(dict.fromkeys(pares_relevantes))
+            origem, destino = pares_unicos[0]
+            par_display = " | ".join(f"{s}→{t}" for s, t in pares_unicos) if len(pares_unicos) > 1 else f"{origem} → {destino}"
 
-        if not pares_relevantes:
-            continue
+            # Área: fallback para descrição + título
+            if not area:
+                area = _extrair_area(descricao + " " + titulo)
 
-        # Deduplicar pares
-        pares_unicos = list(dict.fromkeys(pares_relevantes))
-        origem, destino = pares_unicos[0]
-        par_display = " | ".join(f"{s}→{t}" for s, t in pares_unicos) if len(pares_unicos) > 1 else f"{origem} → {destino}"
+            # Palavras: fallback para descrição
+            if not contagem_palavras:
+                contagem_palavras = _extrair_contagem_palavras(descricao)
 
-        # Área: fallback para descrição + título
-        if not area:
-            area = _extrair_area(descricao + " " + titulo)
+            # Formato: fallback para descrição
+            if not formato:
+                formato = _extrair_formato(descricao)
 
-        # Palavras: fallback para descrição
-        if not contagem_palavras:
-            contagem_palavras = _extrair_contagem_palavras(descricao)
+            # Preço: extrair da descrição
+            preco = _extrair_preco(descricao)
 
-        # Formato: fallback para descrição
-        if not formato:
-            formato = _extrair_formato(descricao)
+            # Empresa: extrair da descrição
+            empresa = _extrair_empresa(descricao)
 
-        # Preço: extrair da descrição
-        preco = _extrair_preco(descricao)
+            # Email direto na descrição
+            email_desc = ""
+            m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', descricao)
+            if m_email and "HIDDEN" not in descricao[max(0, m_email.start()-5):m_email.end()+5]:
+                email_desc = m_email.group(0)
 
-        # Empresa: extrair da descrição
-        empresa = _extrair_empresa(descricao)
+            # Tipo de contato
+            tipo_contato = "email" if email_desc else "ProZ.com"
+            link_contato = email_desc if email_desc else job_url
 
-        # Email direto na descrição
-        email_desc = ""
-        m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', descricao)
-        if m_email and "HIDDEN" not in descricao[max(0, m_email.start()-5):m_email.end()+5]:
-            email_desc = m_email.group(0)
+            # Busca reversa de contato se empresa conhecida e sem email direto
+            contato_descoberto = {}
+            if empresa and not email_desc:
+                contato_descoberto = buscar_contato_empresa(empresa)
 
-        # Tipo de contato
-        tipo_contato = "email" if email_desc else "ProZ.com"
-        link_contato = email_desc if email_desc else job_url
-
-        # Busca reversa de contato se empresa conhecida e sem email direto
-        contato_descoberto = {}
-        if empresa and not email_desc:
-            contato_descoberto = buscar_contato_empresa(empresa)
-
-        vagas.append({
-            "titulo": titulo,
-            "idioma_origem": origem,
-            "idioma_destino": destino,
-            "par_display": par_display,
-            "area": area,
-            "contagem_palavras": contagem_palavras,
-            "formato": formato,
-            "prazo": prazo,
-            "tipo_contato": tipo_contato,
-            "link_contato": link_contato,
-            "link_vaga": job_url,
-            "fonte": "ProZ.com",
-            "data_publicacao": data_pub,
-            "detalhes": descricao,
-            "contato_pessoa": "",
-            "empresa": empresa,
-            "pais": "",  # Não disponível na lista pública do ProZ
-            "preco_palavra": preco,
-            "contato_descoberto": contato_descoberto,
-        })
+            vagas.append({
+                "titulo": titulo,
+                "idioma_origem": origem,
+                "idioma_destino": destino,
+                "par_display": par_display,
+                "area": area,
+                "contagem_palavras": contagem_palavras,
+                "formato": formato,
+                "prazo": prazo,
+                "tipo_contato": tipo_contato,
+                "link_contato": link_contato,
+                "link_vaga": job_url,
+                "fonte": "ProZ.com",
+                "data_publicacao": data_pub,
+                "detalhes": descricao,
+                "contato_pessoa": "",
+                "empresa": empresa,
+                "pais": "",  # Não disponível na lista pública do ProZ
+                "preco_palavra": preco,
+                "contato_descoberto": contato_descoberto,
+            })
 
     logger.info(f"ProZ.com: {len(vagas)} vaga(s) relevante(s) encontrada(s)")
     return vagas, erros
@@ -825,152 +841,181 @@ def _tc_extrair_detalhes(session: requests.Session, job_id: str, url_vaga: str) 
 
 
 def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
-    """Faz scraping das vagas do Translators Café com login autenticado e visita às páginas de detalhes."""
+    """
+    Faz scraping das vagas do Translators Café.
+
+    Estratégia (em ordem de preferência):
+    1. RSS público + cookie LGN para autenticar visitas a páginas de detalhes
+    2. Login via requests (funciona quando o IP não está bloqueado)
+    3. Acesso público sem login (fallback final)
+    """
+    import xml.etree.ElementTree as ET
+
     vagas: List[Dict] = []
     erros: List[str] = []
-
-    session = requests.Session()
-    logado = _tc_fazer_login(session)
-    if not logado:
-        erros.append("Translators Café: falha no login — tentando acesso público")
-
     seen_ids: set = set()
 
-    for page in range(1, 6):
-        url = TC_JOBS_URL if page == 1 else f"{TC_JOBS_URL}?Mode=Selected&Page={page}"
+    # Montar sessão com cookie LGN (login persistente) se disponível
+    session = requests.Session()
+    if TC_COOKIE_LGN:
+        session.cookies.set("LGN", TC_COOKIE_LGN, domain="www.translatorscafe.com")
+        session.cookies.set("LNG", "UILng=en", domain="www.translatorscafe.com")
+        logger.info("Translators Café: usando cookie LGN persistente")
+    else:
+        # Tentar login via requests como fallback
+        logado = _tc_fazer_login(session)
+        if not logado:
+            erros.append("Translators Café: cookie LGN não configurado e login via requests falhou")
 
-        try:
-            resp = session.get(url, headers={**HEADERS, "Referer": TC_JOBS_URL}, timeout=TIMEOUT)
-            if resp.status_code == 403:
-                erros.append(f"Translators Café página {page}: acesso bloqueado (403) — IP do servidor bloqueado pelo TC")
+    # Obter lista de vagas via RSS (não bloqueado por IP)
+    job_ids_relevantes: List[Tuple[str, str, str, str]] = []  # (job_id, titulo, pares_desc, pub_date)
+    try:
+        resp_rss = requests.get(
+            TC_RSS_URL,
+            headers={**HEADERS, "Cookie": f"LGN={TC_COOKIE_LGN}; LNG=UILng%3Den" if TC_COOKIE_LGN else ""},
+            timeout=TIMEOUT,
+        )
+        if resp_rss.status_code == 200 and "<rss" in resp_rss.text[:200]:
+            root = ET.fromstring(resp_rss.content)
+            ns = ""
+            items = root.findall(f"{ns}channel/{ns}item") or root.findall("channel/item")
+            logger.info(f"Translators Café RSS: {len(items)} item(ns) encontrado(s)")
+            for item in items:
+                link = (item.findtext("link") or "").strip()
+                titulo = (item.findtext("title") or "").strip()
+                desc = (item.findtext("description") or "").strip()
+                pub_date = (item.findtext("pubDate") or "").strip()
+                m = re.search(r'Job=(\d+)', link)
+                if not m:
+                    continue
+                job_id = m.group(1)
+                # Filtrar por idiomas relevantes na descrição do RSS
+                desc_clean = re.sub(r'<[^>]+>', ' ', desc)
+                # Aceitar vagas com PT, EN ou ES na descrição
+                if re.search(r'\b(Portuguese|English|Spanish|Português|Inglês|Espanhol)\b', desc_clean, re.IGNORECASE):
+                    job_ids_relevantes.append((job_id, titulo, desc_clean, pub_date))
+        else:
+            erros.append(f"Translators Café RSS: resposta inesperada (status {resp_rss.status_code})")
+            # Fallback: scraping da página de vagas
+            raise ValueError("RSS indisponível")
+    except Exception as exc:
+        erros.append(f"Translators Café RSS: erro — {exc} — tentando scraping direto")
+        # Fallback: scraping da página de vagas (método antigo)
+        for page in range(1, 6):
+            url = TC_JOBS_URL if page == 1 else f"{TC_JOBS_URL}&Page={page}"
+            try:
+                resp = session.get(url, headers={**HEADERS, "Referer": TC_JOBS_URL}, timeout=TIMEOUT)
+                if resp.status_code == 403:
+                    erros.append(f"Translators Café página {page}: acesso bloqueado (403)")
+                    break
+                resp.raise_for_status()
+            except Exception as e2:
+                erros.append(f"Translators Café página {page}: erro — {e2}")
                 break
-            resp.raise_for_status()
-        except Exception as exc:
-            erros.append(f"Translators Café página {page}: erro — {exc}")
-            break
+            soup = BeautifulSoup(resp.content, "html.parser")
+            for a in soup.find_all("a", href=True):
+                if 'SelectedJob.asp' not in a.get('href', ''):
+                    continue
+                m = re.search(r'Job=(\d+)', a['href'])
+                if not m:
+                    continue
+                job_id = m.group(1)
+                titulo = a.get_text(strip=True)
+                job_ids_relevantes.append((job_id, titulo, "", ""))
+            time.sleep(SLEEP)
 
-        soup = BeautifulSoup(resp.content, "html.parser")
-        job_links = [a for a in soup.find_all("a", href=True) if 'SelectedJob.asp' in a.get('href', '')]
+    logger.info(f"Translators Café: {len(job_ids_relevantes)} vaga(s) candidata(s) via RSS/scraping")
 
-        if not job_links:
-            break
+    # Visitar páginas de detalhes para extrair dados completos
+    for job_id, titulo_rss, desc_rss, pub_date_rss in job_ids_relevantes:
+        if job_id in seen_ids:
+            continue
+        seen_ids.add(job_id)
 
-        for a in job_links:
-            titulo = a.get_text(strip=True)
-            href = a['href']
-            m = re.search(r'Job=(\d+)', href)
-            job_id = m.group(1) if m else None
+        url_vaga = f"{TC_BASE_URL}/cafe/SelectedJob.asp?Job={job_id}"
 
-            if not job_id or job_id in seen_ids:
+        # Extrair pares de idiomas da descrição do RSS
+        pares_relevantes: List[Tuple[str, str]] = []
+        for line in re.split(r'[<>\n]', desc_rss):
+            line = line.strip()
+            if not line:
                 continue
-            seen_ids.add(job_id)
+            src, tgt = _parse_par_tc(line) if '>' in line else _extrair_par_idiomas_titulo(line)
+            if _par_relevante(src, tgt):
+                pares_relevantes.append((src, tgt))
 
-            url_vaga = f"{TC_BASE_URL}/cafe/SelectedJob.asp?Job={job_id}"
+        # Visitar página de detalhes
+        detalhes = _tc_extrair_detalhes(session, job_id, url_vaga)
 
-            # Extrair par de idiomas da lista
-            td = a.find_parent('td')
-            tr = td.find_parent('tr') if td else None
+        # Completar pares a partir dos detalhes se RSS não forneceu
+        if not pares_relevantes:
+            src_d = detalhes.get("idioma_origem", "")
+            tgt_d = detalhes.get("idioma_destino", "")
+            if src_d and tgt_d and _par_relevante(src_d, tgt_d):
+                pares_relevantes.append((src_d, tgt_d))
 
-            pares_relevantes: List[Tuple[str, str]] = []
-            area_lista = ""
-            data_pub_lista = ""
+        # Fallback: par do título
+        if not pares_relevantes:
+            src, tgt = _extrair_par_idiomas_titulo(titulo_rss)
+            if _par_relevante(src, tgt):
+                pares_relevantes.append((src, tgt))
 
-            if tr:
-                cells = tr.find_all('td')
-                if len(cells) >= 2:
-                    # Célula 1: par de idiomas
-                    lang_cell = cells[1]
-                    for line in lang_cell.get_text(separator='\n').split('\n'):
-                        line = line.strip()
-                        if '>' in line and len(line) < 80:
-                            src, tgt = _parse_par_tc(line)
-                            if _par_relevante(src, tgt):
-                                pares_relevantes.append((src, tgt))
+        if not pares_relevantes:
+            continue
 
-                    # Célula 0: tipo de serviço (última linha)
-                    cell0_lines = [l.strip() for l in cells[0].get_text(separator='\n').split('\n') if l.strip()]
-                    if len(cell0_lines) >= 2:
-                        area_lista = cell0_lines[-1]
+        pares_unicos = list(dict.fromkeys(pares_relevantes))
+        origem, destino = pares_unicos[0]
+        par_display = " | ".join(f"{s}→{t}" for s, t in pares_unicos) if len(pares_unicos) > 1 else f"{origem} → {destino}"
 
-                # Data de publicação na linha anterior
-                prev_tr = tr.find_previous_sibling('tr')
-                if prev_tr:
-                    prev_text = prev_tr.get_text(strip=True)
-                    m_date = re.search(r'(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s+[AP]M\s+GMT)', prev_text)
-                    if m_date:
-                        data_pub_lista = _formatar_data(m_date.group(1))
+        pais_final = detalhes.get("pais", "")
+        empresa_final = detalhes.get("empresa", "")
+        url_empresa = detalhes.get("url_empresa", "")
+        email_contato = detalhes.get("email_contato", "")
+        site_contato = detalhes.get("site_contato", "")
+        area_final = detalhes.get("area", "") or _extrair_area(titulo_rss)
+        descricao_final = detalhes.get("descricao", "")
+        data_pub_final = detalhes.get("data_publicacao", "") or _formatar_data(pub_date_rss)
 
-            # Fallback: par do título
-            if not pares_relevantes:
-                src, tgt = _extrair_par_idiomas_titulo(titulo)
-                if _par_relevante(src, tgt):
-                    pares_relevantes.append((src, tgt))
+        contagem_palavras = _extrair_contagem_palavras(descricao_final)
+        formato = _extrair_formato(descricao_final)
+        preco = _extrair_preco(descricao_final)
+        prazo = _extrair_prazo(descricao_final)
 
-            if not pares_relevantes:
-                continue
+        if email_contato:
+            tipo_contato = "email"
+            link_contato = email_contato
+        elif site_contato:
+            tipo_contato = "URL"
+            link_contato = site_contato
+        else:
+            tipo_contato = "Translators Café"
+            link_contato = url_vaga
 
-            pares_unicos = list(dict.fromkeys(pares_relevantes))
-            origem, destino = pares_unicos[0]
-            par_display = " | ".join(f"{s}→{t}" for s, t in pares_unicos) if len(pares_unicos) > 1 else f"{origem} → {destino}"
+        contato_descoberto = {}
+        if empresa_final and not email_contato:
+            contato_descoberto = buscar_contato_empresa(empresa_final, url_empresa, pais_final)
 
-            # Visitar página de detalhes para obter campos completos
-            detalhes = _tc_extrair_detalhes(session, job_id, url_vaga)
-
-            # Mesclar dados: detalhes têm prioridade sobre lista
-            pais_final = detalhes.get("pais", "")
-            empresa_final = detalhes.get("empresa", "")
-            url_empresa = detalhes.get("url_empresa", "")
-            email_contato = detalhes.get("email_contato", "")
-            site_contato = detalhes.get("site_contato", "")
-            area_final = detalhes.get("area", "") or area_lista or _extrair_area(titulo)
-            descricao_final = detalhes.get("descricao", "")
-            data_pub_final = detalhes.get("data_publicacao", "") or data_pub_lista
-            tipo_servico = detalhes.get("tipo_servico", "") or area_lista
-
-            # Contagem de palavras e formato da descrição
-            contagem_palavras = _extrair_contagem_palavras(descricao_final)
-            formato = _extrair_formato(descricao_final)
-            preco = _extrair_preco(descricao_final)
-            prazo = _extrair_prazo(descricao_final)
-
-            # Tipo e link de contato
-            if email_contato:
-                tipo_contato = "email"
-                link_contato = email_contato
-            elif site_contato:
-                tipo_contato = "URL"
-                link_contato = site_contato
-            else:
-                tipo_contato = "Translators Café"
-                link_contato = url_vaga
-
-            # Busca reversa se empresa conhecida e sem contato direto
-            contato_descoberto = {}
-            if empresa_final and not email_contato:
-                contato_descoberto = buscar_contato_empresa(empresa_final, url_empresa, pais_final)
-
-            vagas.append({
-                "titulo": titulo,
-                "idioma_origem": origem,
-                "idioma_destino": destino,
-                "par_display": par_display,
-                "area": area_final,
-                "contagem_palavras": contagem_palavras,
-                "formato": formato,
-                "prazo": prazo,
-                "tipo_contato": tipo_contato,
-                "link_contato": link_contato,
-                "link_vaga": url_vaga,
-                "fonte": "Translators Café",
-                "data_publicacao": data_pub_final,
-                "detalhes": descricao_final,
-                "contato_pessoa": "",
-                "empresa": empresa_final,
-                "pais": pais_final,
-                "preco_palavra": preco,
-                "contato_descoberto": contato_descoberto,
-            })
-
+        vagas.append({
+            "titulo": titulo_rss,
+            "idioma_origem": origem,
+            "idioma_destino": destino,
+            "par_display": par_display,
+            "area": area_final,
+            "contagem_palavras": contagem_palavras,
+            "formato": formato,
+            "prazo": prazo,
+            "tipo_contato": tipo_contato,
+            "link_contato": link_contato,
+            "link_vaga": url_vaga,
+            "fonte": "Translators Café",
+            "data_publicacao": data_pub_final,
+            "detalhes": descricao_final,
+            "contato_pessoa": "",
+            "empresa": empresa_final,
+            "pais": pais_final,
+            "preco_palavra": preco,
+            "contato_descoberto": contato_descoberto,
+        })
         time.sleep(SLEEP)
 
     logger.info(f"Translators Café: {len(vagas)} vaga(s) relevante(s) encontrada(s)")
