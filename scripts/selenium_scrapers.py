@@ -21,10 +21,29 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────
 
 def _criar_driver():
-    """Cria e retorna um WebDriver Chromium headless com configurações anti-detecção."""
+    """Cria e retorna um WebDriver Chromium headless com configurações anti-detecção.
+    
+    Usa webdriver-manager para instalar automaticamente o chromedriver compatível
+    com a versão do Chrome/Chromium instalada no sistema.
+    """
+    import subprocess
+    import sys
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
+
+    # Auto-instalar webdriver-manager se necessário
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        from webdriver_manager.core.os_manager import ChromeType
+    except ImportError:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", "webdriver-manager"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        from webdriver_manager.chrome import ChromeDriverManager
+        from webdriver_manager.core.os_manager import ChromeType
 
     opts = Options()
     opts.add_argument("--headless=new")
@@ -39,13 +58,32 @@ def _criar_driver():
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
-    # Localizar o binário do Chromium
+
+    # Localizar o binário do Chromium e instalar chromedriver compatível
+    chromium_binary = None
     for binary in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome"]:
         if os.path.exists(binary):
-            opts.binary_location = binary
+            chromium_binary = binary
             break
 
-    driver = webdriver.Chrome(options=opts)
+    if chromium_binary:
+        opts.binary_location = chromium_binary
+        try:
+            # Tentar com ChromeType.CHROMIUM para obter o driver correto
+            service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+        except Exception:
+            # Fallback: sem especificar o tipo (usa Chrome padrão)
+            try:
+                service = Service(ChromeDriverManager().install())
+            except Exception:
+                service = Service()  # Usa o chromedriver do PATH
+    else:
+        try:
+            service = Service(ChromeDriverManager().install())
+        except Exception:
+            service = Service()
+
+    driver = webdriver.Chrome(service=service, options=opts)
     # Remover flag webdriver do navigator
     driver.execute_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
