@@ -49,6 +49,8 @@ import smtplib
 import time
 from collections import Counter
 from datetime import date, datetime, timezone
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, List, Optional, Tuple
@@ -296,14 +298,45 @@ def _get_gmail_credentials() -> Tuple[str, str]:
     return user, password.replace(" ", "")
 
 
+# Limite do Gmail para exibição inline sem truncamento
+_GMAIL_INLINE_LIMIT_KB = 95  # margem de segurança abaixo dos 102 KB do Gmail
+
+
+def _gerar_pdf_do_html(html: str, nome_arquivo: str = "vagas_traducao.pdf") -> Optional[bytes]:
+    """
+    Converte o HTML premium em PDF usando weasyprint.
+    Retorna os bytes do PDF ou None em caso de erro.
+    """
+    try:
+        from weasyprint import HTML as WeasyprintHTML
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            tmp_path = f.name
+        WeasyprintHTML(string=html).write_pdf(tmp_path)
+        with open(tmp_path, "rb") as f:
+            pdf_bytes = f.read()
+        os.unlink(tmp_path)
+        size_kb = len(pdf_bytes) // 1024
+        logger.info(f"PDF gerado: {size_kb} KB ({nome_arquivo})")
+        return pdf_bytes
+    except Exception as exc:
+        logger.error(f"Erro ao gerar PDF: {exc}")
+        return None
+
+
 def enviar_smtp(
     assunto: str,
     html: str,
     texto_simples: str = "",
 ) -> bool:
     """
-    Envia o email com HTML completo via SMTP SSL (Gmail App Password).
-    Sem limite de tamanho — o HTML premium é entregue diretamente no email.
+    Envia o email via SMTP SSL (Gmail App Password).
+
+    Estratégia de envio:
+    - Se o HTML <= 95 KB: envia o HTML diretamente no corpo do email.
+    - Se o HTML > 95 KB: gera um PDF com o conteúdo completo e envia como
+      anexo, com corpo simples informando que o conteúdo está no PDF.
+      Isso evita o truncamento do Gmail (limite de ~102 KB).
     """
     try:
         gmail_user, gmail_password = _get_gmail_credentials()
@@ -311,18 +344,62 @@ def enviar_smtp(
         logger.error(str(e))
         return False
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = assunto
-    msg["From"] = f"Sistema de Alertas de Tradução <{gmail_user}>"
-    msg["To"] = GMAIL_RECIPIENT
+    size_kb = len(html.encode("utf-8")) // 1024
+    usar_pdf = size_kb > _GMAIL_INLINE_LIMIT_KB
 
-    # Parte texto simples (fallback para clientes sem HTML)
-    if not texto_simples:
-        texto_simples = f"Alerta de vagas de tradução — {assunto}"
-    msg.attach(MIMEText(texto_simples, "plain", "utf-8"))
+    if usar_pdf:
+        logger.info(
+            f"HTML com {size_kb} KB > {_GMAIL_INLINE_LIMIT_KB} KB — "
+            f"convertendo para PDF para evitar truncamento do Gmail"
+        )
+        pdf_bytes = _gerar_pdf_do_html(html)
+        if pdf_bytes is None:
+            logger.warning("Falha ao gerar PDF — enviando HTML mesmo assim")
+            usar_pdf = False
 
-    # Parte HTML (design premium completo)
-    msg.attach(MIMEText(html, "html", "utf-8"))
+    if usar_pdf:
+        # Email com PDF anexado e corpo simples
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = assunto
+        msg["From"] = f"Sistema de Alertas de Tradução <{gmail_user}>"
+        msg["To"] = GMAIL_RECIPIENT
+
+        n_vagas = assunto.split("]")[1].strip().split(" ")[0] if "]" in assunto else "?"
+        corpo_html = f"""
+        <html><body style="font-family:Arial,sans-serif;color:#222;padding:24px;">
+        <h2 style="color:#1a3a5c;">Alerta Diário de Vagas de Tradução</h2>
+        <p>Foram encontradas <strong>{n_vagas} nova(s) vaga(s)</strong> hoje.</p>
+        <p>O conteúdo completo está no arquivo PDF em anexo
+        (<em>vagas_traducao.pdf</em>).</p>
+        <p style="color:#888;font-size:12px;">O PDF foi gerado automaticamente porque
+        o volume de vagas de hoje excede o limite de exibição inline do Gmail
+        ({_GMAIL_INLINE_LIMIT_KB} KB). Abra o anexo para ver todas as vagas com
+        design premium completo.</p>
+        </body></html>
+        """
+        msg.attach(MIMEText(corpo_html, "html", "utf-8"))
+
+        # Anexar o PDF
+        from datetime import date as _date
+        nome_pdf = f"vagas_traducao_{_date.today().strftime('%Y-%m-%d')}.pdf"
+        part = MIMEBase("application", "pdf")
+        part.set_payload(pdf_bytes)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{nome_pdf}"')
+        msg.attach(part)
+
+        logger.info(f"Enviando email com PDF anexado ({len(pdf_bytes)//1024} KB)...")
+    else:
+        # Email com HTML inline (comportamento padrão)
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = assunto
+        msg["From"] = f"Sistema de Alertas de Tradução <{gmail_user}>"
+        msg["To"] = GMAIL_RECIPIENT
+
+        if not texto_simples:
+            texto_simples = f"Alerta de vagas de tradução — {assunto}"
+        msg.attach(MIMEText(texto_simples, "plain", "utf-8"))
+        msg.attach(MIMEText(html, "html", "utf-8"))
 
     try:
         inicio = time.time()
@@ -330,8 +407,10 @@ def enviar_smtp(
             server.login(gmail_user, gmail_password)
             server.sendmail(gmail_user, GMAIL_RECIPIENT, msg.as_string())
         duracao = time.time() - inicio
-        size_kb = len(html.encode("utf-8")) // 1024
-        logger.info(f"Email enviado via SMTP em {duracao:.1f}s — HTML: {size_kb} KB")
+        if usar_pdf:
+            logger.info(f"Email com PDF enviado via SMTP em {duracao:.1f}s")
+        else:
+            logger.info(f"Email enviado via SMTP em {duracao:.1f}s — HTML: {size_kb} KB")
         return True
     except smtplib.SMTPAuthenticationError:
         logger.error(

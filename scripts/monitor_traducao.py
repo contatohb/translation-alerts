@@ -297,6 +297,8 @@ _DOMINIOS_SUSPEITOS = {
     "domainmarket.com", "buydomains.com", "flippa.com", "brandbucket.com",
     "squarespace.com", "wix.com", "weebly.com", "wordpress.com",
     "blogspot.com", "tumblr.com", "medium.com",
+    # Domínios de parking confirmados manualmente
+    "weare.com",  # parking da First Place Internet, Inc. — sem relação com tradução
 }
 
 # Indicadores de página em branco, parking ou erro
@@ -307,6 +309,9 @@ _INDICADORES_INVALIDOS = [
     "403 forbidden", "404 not found", "access denied",
     "this site can't be reached", "err_connection",
     "godaddy", "namecheap", "sedo.com", "dan.com",
+    # Indicadores de parking identificados em weare.com e similares
+    "first place internet", "motels.com", "book discount hotel",
+    "this domain is parked", "this page is parked",
 ]
 
 
