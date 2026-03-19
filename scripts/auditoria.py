@@ -94,28 +94,14 @@ def auditar_coleta(
             acoes.append(f"ProZ.com: erro no fallback Selenium — {exc}")
             logger.error(f"Auditoria ProZ Selenium: {exc}")
 
-    # ── Translators Café: 0 vagas + erro 403 → retry ─────────────
+    # ── Translators Café: IP de datacenter bloqueado — sem retry ────────────────
+    # O TC bloqueia todos os IPs de datacenter (AWS/Azure/GitHub Actions).
+    # Retry seria inútil e desperdiçaria tempo de execução.
     n_tc = por_fonte.get("Translators Café", 0)
     erros_tc = [e for e in erros if "translators" in e.lower() or "café" in e.lower()]
     tem_bloqueio_tc = any("403" in e or "bloqueado" in e.lower() for e in erros_tc)
-
     if n_tc == 0 and tem_bloqueio_tc:
-        logger.info("Auditoria: TC bloqueado (403) — aguardando 60s e tentando novamente...")
-        time.sleep(60)
-        try:
-            from monitor_traducao import _scrape_translators_cafe
-            vagas_tc_retry, erros_tc_retry = _scrape_translators_cafe()
-            if vagas_tc_retry:
-                vagas = [v for v in vagas if v.get("fonte") != "Translators Café"] + vagas_tc_retry
-                erros = [e for e in erros if "translators" not in e.lower() and "café" not in e.lower()] + erros_tc_retry
-                acoes.append(f"Translators Café: retry recuperou {len(vagas_tc_retry)} vaga(s)")
-                logger.info(f"Auditoria: TC retry → {len(vagas_tc_retry)} vaga(s)")
-            else:
-                acoes.append(f"Translators Café: retry também bloqueado — IP do GitHub Actions ainda bloqueado")
-                logger.warning("Auditoria: TC retry também bloqueado")
-        except Exception as exc:
-            acoes.append(f"Translators Café: erro no retry — {exc}")
-            logger.error(f"Auditoria TC retry: {exc}")
+        logger.info("Auditoria: TC bloqueado por IP de datacenter — retry não será tentado (comportamento esperado)")
 
     # ── Translation Directory: 0 vagas → retry imediato ──────────
     n_td = por_fonte.get("Translation Directory", 0)

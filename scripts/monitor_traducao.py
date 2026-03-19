@@ -895,19 +895,27 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
                 if re.search(r'\b(Portuguese|English|Spanish|Português|Inglês|Espanhol)\b', desc_clean, re.IGNORECASE):
                     job_ids_relevantes.append((job_id, titulo, desc_clean, pub_date))
         else:
-            erros.append(f"Translators Café RSS: resposta inesperada (status {resp_rss.status_code})")
-            # Fallback: scraping da página de vagas
-            raise ValueError("RSS indisponível")
-    except Exception as exc:
-        erros.append(f"Translators Café RSS: erro — {exc} — tentando scraping direto")
+            # TC bloqueia IPs de datacenter (403) — registrar como aviso informativo
+            status = resp_rss.status_code
+            if status == 403:
+                erros.append("Translators Café: IP de datacenter bloqueado (403) — fonte indisponível neste ambiente")
+                logger.info("Translators Café: IP bloqueado pelo TC — pulando (normal em GitHub Actions)")
+                return vagas, erros
+            else:
+                erros.append(f"Translators Café RSS: resposta inesperada (status {status})")
+                raise ValueError(f"RSS retornou status {status}")
+    except ValueError:
+        # Erro já registrado acima; tentar scraping direto apenas se não for bloqueio 403
+        if any("bloqueado (403)" in e for e in erros):
+            return vagas, erros
         # Fallback: scraping da página de vagas (método antigo)
         for page in range(1, 6):
             url = TC_JOBS_URL if page == 1 else f"{TC_JOBS_URL}&Page={page}"
             try:
                 resp = session.get(url, headers={**HEADERS, "Referer": TC_JOBS_URL}, timeout=TIMEOUT)
                 if resp.status_code == 403:
-                    erros.append(f"Translators Café página {page}: acesso bloqueado (403)")
-                    break
+                    erros.append("Translators Café: IP de datacenter bloqueado (403) — fonte indisponível neste ambiente")
+                    return vagas, erros
                 resp.raise_for_status()
             except Exception as e2:
                 erros.append(f"Translators Café página {page}: erro — {e2}")
@@ -923,6 +931,9 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
                 titulo = a.get_text(strip=True)
                 job_ids_relevantes.append((job_id, titulo, "", ""))
             time.sleep(SLEEP)
+    except Exception as exc:
+        erros.append(f"Translators Café: erro inesperado — {exc}")
+        return vagas, erros
 
     logger.info(f"Translators Café: {len(job_ids_relevantes)} vaga(s) candidata(s) via RSS/scraping")
 
@@ -1398,28 +1409,9 @@ def buscar_vagas() -> Tuple[List[Dict], List[str]]:
 
     # ── Translators Café ─────────────────────────────────────────
     vagas_tc, erros_tc = _scrape_translators_cafe()
-    # Fallback Selenium se requests retornou 0 vagas ou erro de bloqueio
-    if selenium_ok and (len(vagas_tc) == 0 or any(
-        "bloqueado" in e.lower() or "403" in e or "login" in e.lower()
-        for e in erros_tc
-    )):
-        logger.info("Translators Café: tentando scraper Selenium como fallback...")
-        try:
-            from selenium_scrapers import scrape_translators_cafe_selenium
-            vagas_tc_sel, erros_tc_sel = scrape_translators_cafe_selenium(
-                _parse_par_tc, _extrair_par_idiomas_titulo, _par_relevante,
-                _extrair_area, _extrair_contagem_palavras, _extrair_formato,
-                _extrair_preco, _extrair_prazo, _formatar_data, buscar_contato_empresa,
-            )
-            if len(vagas_tc_sel) > len(vagas_tc):
-                vagas_tc = vagas_tc_sel
-                erros_tc = erros_tc_sel
-                logger.info(f"Translators Café: Selenium retornou {len(vagas_tc)} vaga(s)")
-            else:
-                erros_tc.extend(erros_tc_sel)
-        except Exception as exc:
-            erros_tc.append(f"Translators Café (Selenium fallback): erro — {exc}")
-            logger.error(f"Translators Café Selenium fallback: {exc}")
+    # Nota: o Translators Café bloqueia IPs de datacenter (AWS/Azure/GitHub Actions).
+    # O fallback Selenium usa o mesmo IP bloqueado, portanto não é tentado.
+    # O sistema funciona com ProZ.com e Translation Directory quando o TC está bloqueado.
     todas_vagas.extend(vagas_tc)
     todos_erros.extend(erros_tc)
 

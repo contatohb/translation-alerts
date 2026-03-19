@@ -404,22 +404,47 @@ def gerar_html_email(
             f'</tr>'
         )
 
-    # Bloco de erros
+    # Bloco de avisos — separar informativos (TC bloqueado) de erros reais
     erros_html = ""
     if erros:
-        items = "".join(
-            f'<li style="{_FONT}font-size:12px;color:#856404;margin-bottom:3px;">{err}</li>'
-            for err in erros
-        )
-        erros_html = (
-            f'<div style="margin-top:20px;padding:12px 16px;background:#fff3cd;'
-            f'border:1px solid #ffc107;border-radius:6px;">'
-            f'<div style="{_FONT}font-size:11px;font-weight:bold;color:#856404;'
-            f'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">'
-            f'Avisos do sistema</div>'
-            f'<ul style="margin:0;padding-left:16px;">{items}</ul>'
-            f'</div>'
-        )
+        # Avisos informativos: TC bloqueado por IP de datacenter (comportamento esperado)
+        erros_info = [e for e in erros if "bloqueado" in e.lower() and "403" in e]
+        erros_reais = [e for e in erros if e not in erros_info]
+
+        partes_html = []
+
+        if erros_info:
+            items_info = "".join(
+                f'<li style="{_FONT}font-size:12px;color:#5a6a7a;margin-bottom:3px;">{err}</li>'
+                for err in erros_info
+            )
+            partes_html.append(
+                f'<div style="margin-top:12px;padding:10px 14px;background:#f0f4f8;'
+                f'border:1px solid #c8d6e5;border-radius:6px;">'
+                f'<div style="{_FONT}font-size:11px;font-weight:bold;color:#5a6a7a;'
+                f'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:5px;">'
+                f'Fontes indisponíveis neste ambiente</div>'
+                f'<ul style="margin:0;padding-left:16px;">{items_info}</ul>'
+                f'</div>'
+            )
+
+        if erros_reais:
+            items_reais = "".join(
+                f'<li style="{_FONT}font-size:12px;color:#856404;margin-bottom:3px;">{err}</li>'
+                for err in erros_reais
+            )
+            partes_html.append(
+                f'<div style="margin-top:12px;padding:12px 16px;background:#fff3cd;'
+                f'border:1px solid #ffc107;border-radius:6px;">'
+                f'<div style="{_FONT}font-size:11px;font-weight:bold;color:#856404;'
+                f'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">'
+                f'Avisos do sistema</div>'
+                f'<ul style="margin:0;padding-left:16px;">{items_reais}</ul>'
+                f'</div>'
+            )
+
+        if partes_html:
+            erros_html = f'<div style="margin-top:20px;">{" ".join(partes_html)}</div>'
 
     # Indicador de parte
     parte_html = ""
