@@ -63,11 +63,11 @@ except Exception:
 # Configuração via variáveis de ambiente
 # ─────────────────────────────────────────────────────────────────
 
-SUPABASE_URL      = os.getenv("SUPABASE_URL", "https://wuadkgmggkmyglxpxeyh.supabase.co")
-SUPABASE_KEY      = os.getenv("SUPABASE_KEY", "")
-GMAIL_USER        = os.getenv("GMAIL_USER", "huddsong@gmail.com")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
-GMAIL_RECIPIENT   = os.getenv("GMAIL_RECIPIENT", "huddsong@gmail.com")
+SUPABASE_URL      = os.getenv("SUPABASE_URL", "https://wuadkgmggkmyglxpxeyh.supabase.co").strip()
+SUPABASE_KEY      = os.getenv("SUPABASE_KEY", "").strip()
+GMAIL_USER        = os.getenv("GMAIL_USER", "huddsong@gmail.com").strip()
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+GMAIL_RECIPIENT   = os.getenv("GMAIL_RECIPIENT", "huddsong@gmail.com").strip()
 
 # Fallback: arquivo local (compatibilidade com execuções sem Supabase)
 SEEN_PATH = os.path.join(_PROJECT_DIR, "data", "traducao_seen.json")
@@ -140,10 +140,10 @@ class SupabaseClient:
             return None
 
     def get_urls_vistas(self) -> set:
-        """Retorna o conjunto de URLs já alertadas."""
+        """Retorna o conjunto de URLs já alertadas. Lança RuntimeError se o Supabase falhar."""
         rows = self._get("traducao_vagas_vistas", {"select": "url"})
         if rows is None:
-            return set()
+            raise RuntimeError("Supabase inacessível — get_urls_vistas retornou None")
         return {r["url"] for r in rows}
 
     def marcar_vistas(self, vagas: List[Dict]) -> bool:
