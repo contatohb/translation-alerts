@@ -2,7 +2,7 @@ name: Daily Translation Alert
 
 on:
   schedule:
-    - cron: '0 11 * * *'  # 08:00 BRT (UTC-3 = 11:00 UTC)
+    - cron: '0 11 * * *'  # 08:00 BRT (UTC-3 = 11:00 UTC )
   workflow_dispatch: {}
 
 permissions:
@@ -23,22 +23,32 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install Chromium
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y chromium-browser 2>/dev/null || \
+          sudo apt-get install -y chromium 2>/dev/null || true
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install requests beautifulsoup4 python-dotenv
 
       - name: Send daily translation alert
         env:
-          MONITOR_RECIPIENT: huddsong@gmail.com
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
         run: |
           cd scripts && python alerta_traducao.py
 
-      - name: Commit updated seen history
+      - name: Commit updated seen history (fallback local)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/traducao_seen.json || true
+          git add data/traducao_seen.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore: update translation seen history [skip ci]"
           git push || true
 
