@@ -88,6 +88,7 @@ class SupabaseClient:
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "Prefer": "return=minimal",
+            # Tabelas no schema public com prefixo traducao_
         }
 
     def _get(self, path: str, params: dict = None) -> Optional[list]:
@@ -140,7 +141,7 @@ class SupabaseClient:
 
     def get_urls_vistas(self) -> set:
         """Retorna o conjunto de URLs já alertadas."""
-        rows = self._get("traducao.vagas_vistas", {"select": "url"})
+        rows = self._get("traducao_vagas_vistas", {"select": "url"})
         if rows is None:
             return set()
         return {r["url"] for r in rows}
@@ -161,18 +162,18 @@ class SupabaseClient:
             if v.get("url")
         ]
         return self._post(
-            "traducao.vagas_vistas?on_conflict=url",
+            "traducao_vagas_vistas?on_conflict=url",
             rows,
         )
 
     def registrar_execucao(self, dados: dict) -> bool:
         """Registra o log da execução diária."""
-        return self._post("traducao.log_execucoes", dados)
+        return self._post("traducao_log_execucoes", dados)
 
     def get_config(self, chave: str) -> Optional[str]:
         """Lê um valor da tabela de configurações."""
         rows = self._get(
-            "traducao.configuracoes",
+            "traducao_configuracoes",
             {"select": "valor", "chave": f"eq.{chave}"},
         )
         if rows:
