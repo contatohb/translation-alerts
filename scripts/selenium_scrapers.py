@@ -378,6 +378,7 @@ def scrape_proz_selenium(
 
 TC_USERNAME = os.environ.get("TC_USERNAME", "hudsonborges")
 TC_PASSWORD = os.environ.get("TC_PASSWORD", "Raios25_")
+TC_COOKIE_LGN = os.environ.get("TC_COOKIE_LGN", "").strip()
 TC_LOGIN_URL = "https://www.translatorscafe.com/cafe/login.asp"
 TC_JOBS_URL = "https://www.translatorscafe.com/cafe/SearchJobs.asp"
 TC_BASE_URL = "https://www.translatorscafe.com"
@@ -565,8 +566,35 @@ def scrape_translators_cafe_selenium(
     try:
         driver = _criar_driver()
 
-        # Login
-        logado = _tc_login_selenium(driver)
+        # Estratégia 1: injetar cookie LGN persistente (não requer formulário de login)
+        logado = False
+        if TC_COOKIE_LGN:
+            try:
+                # Precisa navegar para o domínio antes de injetar cookies
+                driver.get(TC_BASE_URL)
+                _aguardar_pagina(driver)
+                time.sleep(2)
+                driver.add_cookie({
+                    "name": "LGN",
+                    "value": TC_COOKIE_LGN,
+                    "domain": "www.translatorscafe.com",
+                    "path": "/",
+                    "secure": False,
+                })
+                driver.add_cookie({
+                    "name": "LNG",
+                    "value": "UILng=en",
+                    "domain": "www.translatorscafe.com",
+                    "path": "/",
+                })
+                logger.info("TC (Selenium): cookie LGN injetado com sucesso")
+                logado = True
+            except Exception as e_cookie:
+                logger.warning(f"TC (Selenium): falha ao injetar cookie LGN — {e_cookie}")
+
+        # Estratégia 2: login via formulário (fallback)
+        if not logado:
+            logado = _tc_login_selenium(driver)
         if not logado:
             erros.append("Translators Café (Selenium): falha no login")
             logger.warning("TC (Selenium): continuando sem login (acesso público)")

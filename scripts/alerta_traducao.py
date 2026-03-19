@@ -31,7 +31,7 @@ import subprocess
 import sys
 
 # ── Auto-instalação de dependências ausentes ─────────────────────
-_DEPS = ["httpx[http2]", "selenium", "lxml", "webdriver-manager"]
+_DEPS = ["httpx[http2]", "selenium", "lxml", "webdriver-manager", "weasyprint"]
 for _dep in _DEPS:
     try:
         __import__(_dep.split("[")[0].replace("-", "_"))
