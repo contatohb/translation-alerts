@@ -58,6 +58,17 @@ def _criar_driver():
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
+    # Flags necessárias para funcionar em ambientes CI/CD restritos (GitHub Actions)
+    opts.add_argument("--remote-debugging-port=0")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-infobars")
+    opts.add_argument("--disable-software-rasterizer")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-default-apps")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--single-process")  # Necessário em ambientes com recursos limitados
 
     # Localizar o binário do Chromium e instalar chromedriver compatível
     chromium_binary = None
