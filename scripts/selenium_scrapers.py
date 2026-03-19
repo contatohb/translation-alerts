@@ -138,122 +138,168 @@ def scrape_proz_selenium(
     buscar_contato_empresa,
 ) -> Tuple[List[Dict], List[str]]:
     """
-    Scraper ProZ.com usando Selenium headless.
-    Recebe as funções auxiliares do monitor_traducao.py como parâmetros.
+    Scraper ProZ.com via RSS (para listar vagas por par de idiomas) + Selenium (para detalhes).
+    
+    Estratégia:
+    1. Coleta IDs de vagas via RSS filtrado por par de idiomas (sem bloqueio de IP)
+    2. Visita cada página de detalhe via Selenium para extrair contato/empresa
     """
-    from datetime import datetime, timedelta
+    import xml.etree.ElementTree as ET
+    import requests as _requests
+
+    PROZ_LANG_PAIRS = [
+        ("por", "eng"),  # PT → EN
+        ("eng", "por"),  # EN → PT
+        ("por", "esl"),  # PT → ES
+        ("esl", "por"),  # ES → PT
+        ("eng", "esl"),  # EN → ES
+        ("esl", "eng"),  # ES → EN
+    ]
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
     vagas: List[Dict] = []
     erros: List[str] = []
     driver = None
 
+    # ── Fase 1: Coletar IDs de vagas via RSS (não bloqueado por IP) ────────────────
+    job_items: List[Dict] = []  # {job_id, titulo, descricao, pub_date, job_url, sl, tl}
+    seen_ids: set = set()
+
+    for sl, tl in PROZ_LANG_PAIRS:
+        rss_url = f"https://connect.proz.com/language-jobs?sl={sl}&tl={tl}&format=rss"
+        try:
+            resp = _requests.get(rss_url, headers=HEADERS, timeout=20)
+            if resp.status_code != 200 or "<rss" not in resp.text[:200]:
+                erros.append(f"ProZ RSS {sl}→{tl}: status {resp.status_code}")
+                continue
+            root = ET.fromstring(resp.content)
+            items = root.findall("channel/item")
+            logger.info(f"ProZ RSS {sl}→{tl}: {len(items)} vaga(s)")
+            for item in items:
+                link = (item.findtext("link") or "").strip()
+                titulo = (item.findtext("title") or "").strip()
+                desc = (item.findtext("description") or "").strip()
+                pub_date = (item.findtext("pubDate") or "").strip()
+                m = re.search(r'translation-jobs/(\d+)', link)
+                if not m:
+                    continue
+                job_id = m.group(1)
+                if job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+                job_items.append({
+                    "job_id": job_id,
+                    "titulo": titulo,
+                    "descricao": desc[:600],
+                    "pub_date": pub_date,
+                    "job_url": f"https://www.proz.com/translation-jobs/{job_id}",
+                    "sl": sl,
+                    "tl": tl,
+                })
+        except Exception as exc:
+            erros.append(f"ProZ RSS {sl}→{tl}: erro — {exc}")
+        time.sleep(0.5)
+
+    logger.info(f"ProZ.com RSS: {len(job_items)} vaga(s) únicas coletadas nos 6 pares")
+
+    if not job_items:
+        return vagas, erros
+
+    # ── Fase 2: Visitar páginas de detalhe via Selenium ────────────────────────────
     try:
         driver = _criar_driver()
-        url = "https://connect.proz.com/language-jobs"
-        logger.info("ProZ.com (Selenium): acessando página de vagas...")
-        driver.get(url)
-        _aguardar_pagina(driver)
-        time.sleep(3)  # Aguardar renderização JavaScript
-
-        # Verificar se a página carregou vagas
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "html.parser")
-
-        seen_urls: set = set()
-        job_links = soup.find_all("a", class_="job_title_link", href=True)
-        logger.info(f"ProZ.com (Selenium): {len(job_links)} link(s) de vagas encontrado(s)")
-
-        if not job_links:
-            # Tentar padrão alternativo
-            job_links = [a for a in soup.find_all("a", href=True)
-                         if re.search(r'proz\.com/translation-jobs/\d+', a.get("href", ""))]
-            logger.info(f"ProZ.com (Selenium) fallback: {len(job_links)} link(s)")
-
-        for a in job_links:
-            href = a.get("href", "")
-            titulo = a.get_text(strip=True)
-            if not titulo or len(titulo) < 8:
+    except Exception as exc:
+        erros.append(f"ProZ.com Selenium: falha ao criar driver — {exc}")
+        # Fallback: usar dados do RSS sem detalhes
+        for item in job_items:
+            sl, tl = item["sl"], item["tl"]
+            lang_map = {"por": "PT", "eng": "EN", "esl": "ES"}
+            origem = lang_map.get(sl, sl.upper())
+            destino = lang_map.get(tl, tl.upper())
+            if not _par_relevante(origem, destino):
                 continue
-            if not re.search(r'proz\.com/translation-jobs/\d+', href):
-                continue
-            job_url = href if href.startswith("http") else f"https://www.proz.com{href}"
-            if job_url in seen_urls:
-                continue
-            seen_urls.add(job_url)
+            par_display = f"{origem} → {destino}"
+            descricao = item["descricao"]
+            titulo = item["titulo"]
+            area = _extrair_area(descricao + " " + titulo)
+            contagem_palavras = _extrair_contagem_palavras(descricao)
+            formato = _extrair_formato(descricao)
+            preco = _extrair_preco(descricao)
+            empresa = _extrair_empresa(descricao)
+            email_desc = ""
+            m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', descricao)
+            if m_email and "HIDDEN" not in descricao[max(0, m_email.start()-5):m_email.end()+5]:
+                email_desc = m_email.group(0)
+            tipo_contato = "email" if email_desc else "ProZ.com"
+            link_contato = email_desc if email_desc else item["job_url"]
+            contato_descoberto = {}
+            if empresa and not email_desc:
+                contato_descoberto = buscar_contato_empresa(empresa)
+            data_pub = _formatar_data(item["pub_date"])
+            vagas.append({
+                "titulo": titulo, "idioma_origem": origem, "idioma_destino": destino,
+                "par_display": par_display, "area": area, "contagem_palavras": contagem_palavras,
+                "formato": formato, "prazo": "", "tipo_contato": tipo_contato,
+                "link_contato": link_contato, "link_vaga": item["job_url"], "fonte": "ProZ.com",
+                "data_publicacao": data_pub, "detalhes": descricao, "contato_pessoa": "",
+                "empresa": empresa, "pais": "", "preco_palavra": preco,
+                "contato_descoberto": contato_descoberto,
+            })
+        logger.info(f"ProZ.com (fallback RSS sem Selenium): {len(vagas)} vaga(s)")
+        return vagas, erros
 
-            # Descrição via data-content
-            descricao_raw = unescape(a.get("data-content", ""))
-            descricao = re.sub(r'<[^>]+>', ' ', descricao_raw).strip()
-            descricao = re.sub(r'\s+', ' ', descricao)[:600]
+    try:
+        for item in job_items:
+            job_url = item["job_url"]
+            titulo = item["titulo"]
+            descricao_rss = item["descricao"]
+            pub_date = item["pub_date"]
+            sl, tl = item["sl"], item["tl"]
 
-            # Subir para o jobs__result-wrap
-            result_wrap = None
-            parent = a.parent
-            for _ in range(20):
-                if parent and parent.get("class") and any("result-wrap" in c for c in parent.get("class", [])):
-                    result_wrap = parent
-                    break
-                parent = parent.parent if parent else None
+            lang_map = {"por": "PT", "eng": "EN", "esl": "ES"}
+            origem_rss = lang_map.get(sl, sl.upper())
+            destino_rss = lang_map.get(tl, tl.upper())
 
+            # Visitar página de detalhe via Selenium
+            try:
+                driver.get(job_url)
+                _aguardar_pagina(driver)
+                time.sleep(2)
+                page_source = driver.page_source
+                soup = BeautifulSoup(page_source, "html.parser")
+                full_text = soup.get_text(separator="\n", strip=True)
+            except Exception as exc:
+                erros.append(f"ProZ detalhe {job_url}: erro — {exc}")
+                soup = BeautifulSoup("", "html.parser")
+                full_text = ""
+
+            # Extrair pares de idiomas da página de detalhe
             pares_relevantes: List[Tuple[str, str]] = []
-            area = ""
-            contagem_palavras = ""
-            formato = ""
-            data_pub = ""
-            prazo = ""
-
-            if result_wrap:
-                full_text = result_wrap.get_text(separator="\n", strip=True)
-                m_wc = re.search(r'Word count:\s*([\d,\.]+)', full_text, re.IGNORECASE)
-                if m_wc:
-                    contagem_palavras = m_wc.group(1).replace(",", ".")
-                m_fmt = re.search(r'Format:\s*([^\n]+)', full_text, re.IGNORECASE)
-                if m_fmt:
-                    formato = m_fmt.group(1).strip()
-                m_posted = re.search(
-                    r'Posted\s+((?:January|February|March|April|May|June|July|August|'
-                    r'September|October|November|December)\s+\d{1,2})',
-                    full_text, re.IGNORECASE
-                )
-                if m_posted:
-                    data_pub = _formatar_data(m_posted.group(1).strip())
-                delivery_el = result_wrap.find(attrs={"data-title": "Delivery date"})
-                if delivery_el:
-                    parent_el = delivery_el.parent
-                    if parent_el:
-                        prazo_text = parent_el.get_text(strip=True)
-                        prazo = _formatar_data(prazo_text)
-                if not prazo:
-                    m_days = re.search(r'Open\s+for\s+(\d+)\s+more\s+days?', full_text, re.IGNORECASE)
-                    if m_days:
-                        prazo = (datetime.now() + timedelta(days=int(m_days.group(1)))).strftime("%d/%m/%Y")
-                for span in result_wrap.find_all("span", attrs={"data-toggle": "tooltip"}):
-                    title_attr = unescape(span.get("title", ""))
-                    text_span = span.get_text(strip=True)
-                    if "language pair" in text_span.lower():
-                        langs = re.findall(r'<li>([^<]+)</li>', title_attr)
-                        for lang_pair in langs:
-                            src, tgt = _extrair_par_idiomas_titulo(lang_pair)
-                            if _par_relevante(src, tgt):
-                                pares_relevantes.append((src, tgt))
-                    elif "field" in text_span.lower():
-                        fields = re.findall(r'<li>([^<]+)</li>', title_attr)
-                        area = ", ".join(fields[:3])
-                for li in result_wrap.find_all("li"):
-                    if not li.find("span"):
-                        text_li = li.get_text(strip=True)
-                        src, tgt = _extrair_par_idiomas_titulo(text_li)
+            for span in soup.find_all("span", attrs={"data-toggle": "tooltip"}):
+                title_attr = unescape(span.get("title", ""))
+                text_span = span.get_text(strip=True)
+                if "language pair" in text_span.lower():
+                    langs = re.findall(r'<li>([^<]+)</li>', title_attr)
+                    for lang_pair in langs:
+                        src, tgt = _extrair_par_idiomas_titulo(lang_pair)
                         if _par_relevante(src, tgt):
                             pares_relevantes.append((src, tgt))
 
+            # Fallback: par do RSS
+            if not pares_relevantes and _par_relevante(origem_rss, destino_rss):
+                pares_relevantes.append((origem_rss, destino_rss))
+
+            # Fallback: par do título
             if not pares_relevantes:
                 src, tgt = _extrair_par_idiomas_titulo(titulo)
                 if _par_relevante(src, tgt):
                     pares_relevantes.append((src, tgt))
-            if not pares_relevantes:
-                src, tgt = _extrair_par_idiomas_titulo(descricao)
-                if _par_relevante(src, tgt):
-                    pares_relevantes.append((src, tgt))
+
             if not pares_relevantes:
                 continue
 
@@ -264,47 +310,54 @@ def scrape_proz_selenium(
                 if len(pares_unicos) > 1
                 else f"{origem} → {destino}"
             )
-            if not area:
-                area = _extrair_area(descricao + " " + titulo)
-            if not contagem_palavras:
-                contagem_palavras = _extrair_contagem_palavras(descricao)
-            if not formato:
-                formato = _extrair_formato(descricao)
-            preco = _extrair_preco(descricao)
-            empresa = _extrair_empresa(descricao)
+
+            # Extrair dados da página de detalhe
+            descricao = descricao_rss
+            area = _extrair_area(full_text + " " + titulo)
+            contagem_palavras = _extrair_contagem_palavras(full_text)
+            formato = _extrair_formato(full_text)
+            preco = _extrair_preco(full_text)
+            prazo = ""
+            m_days = re.search(r'Open\s+for\s+(\d+)\s+more\s+days?', full_text, re.IGNORECASE)
+            if m_days:
+                from datetime import datetime, timedelta
+                prazo = (datetime.now() + timedelta(days=int(m_days.group(1)))).strftime("%d/%m/%Y")
+            data_pub = _formatar_data(pub_date)
+
+            # Empresa
+            empresa = _extrair_empresa(full_text)
+            if not empresa:
+                empresa = _extrair_empresa(titulo)
+
+            # Email direto na página
             email_desc = ""
-            m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', descricao)
-            if m_email and "HIDDEN" not in descricao[max(0, m_email.start() - 5):m_email.end() + 5]:
-                email_desc = m_email.group(0)
+            m_email = re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', full_text)
+            if m_email:
+                cand = m_email.group(0)
+                if not any(x in cand.lower() for x in ["proz.com", "example", "noreply", "support"]):
+                    email_desc = cand
+
+            # Tipo de contato
             tipo_contato = "email" if email_desc else "ProZ.com"
             link_contato = email_desc if email_desc else job_url
+
+            # Busca reversa de contato
             contato_descoberto = {}
             if empresa and not email_desc:
                 contato_descoberto = buscar_contato_empresa(empresa)
 
             vagas.append({
-                "titulo": titulo,
-                "idioma_origem": origem,
-                "idioma_destino": destino,
-                "par_display": par_display,
-                "area": area,
-                "contagem_palavras": contagem_palavras,
-                "formato": formato,
-                "prazo": prazo,
-                "tipo_contato": tipo_contato,
-                "link_contato": link_contato,
-                "link_vaga": job_url,
-                "fonte": "ProZ.com",
-                "data_publicacao": data_pub,
-                "detalhes": descricao,
-                "contato_pessoa": "",
-                "empresa": empresa,
-                "pais": "",
-                "preco_palavra": preco,
+                "titulo": titulo, "idioma_origem": origem, "idioma_destino": destino,
+                "par_display": par_display, "area": area, "contagem_palavras": contagem_palavras,
+                "formato": formato, "prazo": prazo, "tipo_contato": tipo_contato,
+                "link_contato": link_contato, "link_vaga": job_url, "fonte": "ProZ.com",
+                "data_publicacao": data_pub, "detalhes": descricao, "contato_pessoa": "",
+                "empresa": empresa, "pais": "", "preco_palavra": preco,
                 "contato_descoberto": contato_descoberto,
             })
+            time.sleep(0.8)
 
-        logger.info(f"ProZ.com (Selenium): {len(vagas)} vaga(s) relevante(s) encontrada(s)")
+        logger.info(f"ProZ.com (Selenium+RSS): {len(vagas)} vaga(s) relevante(s) encontrada(s)")
 
     except Exception as exc:
         erros.append(f"ProZ.com (Selenium): erro — {exc}")
