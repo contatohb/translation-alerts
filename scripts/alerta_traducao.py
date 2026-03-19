@@ -152,14 +152,14 @@ class SupabaseClient:
             return True
         rows = [
             {
-                "url": v.get("url", ""),
+                "url": v.get("link_vaga", ""),
                 "fonte": v.get("fonte", ""),
                 "titulo": v.get("titulo", "")[:500],
                 "primeira_vez_vista": datetime.now(timezone.utc).isoformat(),
                 "ultima_vez_vista": datetime.now(timezone.utc).isoformat(),
             }
             for v in vagas
-            if v.get("url")
+            if v.get("link_vaga")
         ]
         return self._post(
             "traducao_vagas_vistas?on_conflict=url",
@@ -234,7 +234,7 @@ def filtrar_e_registrar_novas(
     if sb is not None:
         try:
             urls_vistas = sb.get_urls_vistas()
-            novas = [v for v in vagas if v.get("url") and v["url"] not in urls_vistas]
+            novas = [v for v in vagas if v.get("link_vaga") and v["link_vaga"] not in urls_vistas]
             if novas:
                 ok = sb.marcar_vistas(novas)
                 if not ok:
@@ -247,8 +247,8 @@ def filtrar_e_registrar_novas(
 
     # Fallback: arquivo local
     seen = _load_seen_local(SEEN_PATH)
-    novas = [v for v in vagas if v.get("url") and v["url"] not in seen]
-    seen_atualizado = {**seen, **{v["url"]: True for v in novas if v.get("url")}}
+    novas = [v for v in vagas if v.get("link_vaga") and v["link_vaga"] not in seen]
+    seen_atualizado = {**seen, **{v["link_vaga"]: True for v in novas if v.get("link_vaga")}}
     _save_seen_local(seen_atualizado, SEEN_PATH)
     logger.info(f"Deduplicação via arquivo local: {len(seen)} vistas, {len(novas)} novas")
     return novas, False
@@ -372,7 +372,7 @@ def gerar_texto_simples(vagas: List[Dict], erros: List[str], date_str: str) -> s
             f"    Fonte: {v.get('fonte', '')}",
             f"    Idiomas: {v.get('par_idiomas', '')}",
             f"    Empresa: {v.get('empresa', '')}",
-            f"    Link: {v.get('url', '')}",
+            f"    Link: {v.get('link_vaga', '')}",
             "",
         ]
 
