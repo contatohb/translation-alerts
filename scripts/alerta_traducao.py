@@ -27,11 +27,25 @@ Uso:
 """
 from __future__ import annotations
 
+import subprocess
+import sys
+
+# ── Auto-instalação de dependências ausentes ─────────────────────
+_DEPS = ["httpx[http2]", "selenium", "lxml"]
+for _dep in _DEPS:
+    try:
+        __import__(_dep.split("[")[0].replace("-", "_"))
+    except ImportError:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", _dep],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
 import json
 import logging
 import os
 import smtplib
-import sys
 import time
 from collections import Counter
 from datetime import date, datetime, timezone
