@@ -2,7 +2,7 @@ name: Daily Translation Alert
 
 on:
   schedule:
-    - cron: '0 11 * * *'  # 08:00 BRT (UTC-3 = 11:00 UTC )
+    - cron: '0 11 * * *'  # 08:00 BRT (UTC-3 = 11:00 UTC)
   workflow_dispatch: {}
 
 permissions:
@@ -11,6 +11,7 @@ permissions:
 jobs:
   translation-alert:
     runs-on: ubuntu-latest
+    timeout-minutes: 45  # Auditoria pode precisar de tempo extra (retry TC = +60s)
 
     steps:
       - name: Checkout
@@ -23,29 +24,51 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Chromium
+      - name: Install system dependencies
         run: |
           sudo apt-get update -qq
+          # Chromium para Selenium (fallback ProZ)
           sudo apt-get install -y chromium-browser 2>/dev/null || \
           sudo apt-get install -y chromium 2>/dev/null || true
+          # Xvfb para Selenium não-headless se necessário
+          sudo apt-get install -y xvfb 2>/dev/null || true
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests beautifulsoup4 python-dotenv
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            python-dotenv \
+            httpx[http2] \
+            selenium \
+            lxml
 
       - name: Send daily translation alert
         env:
+          # Supabase — deduplicação e log de execuções
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Gmail SMTP — envio do HTML premium sem limite de tamanho
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
           TC_COOKIE_LGN: ${{ secrets.TC_COOKIE_LGN }}
+          # Credenciais dos sites de vagas (para scrapers autenticados)
+          TC_USERNAME: ${{ secrets.TC_USERNAME }}
+          TC_PASSWORD: ${{ secrets.TC_PASSWORD }}
+          PROZ_USERNAME: ${{ secrets.PROZ_USERNAME }}
+          PROZ_PASSWORD: ${{ secrets.PROZ_PASSWORD }}
+          # Configuração de ambiente
+          PYTHONUNBUFFERED: "1"
+          PYTHONIOENCODING: "utf-8"
         run: |
           cd scripts && python alerta_traducao.py
+        continue-on-error: false
 
       - name: Commit updated seen history (fallback local)
+        # Só faz commit se o Supabase não estiver disponível e o seen.json foi atualizado
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -53,8 +76,9 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update translation seen history [skip ci]"
           git push || true
 
-      - name: Notify on failure
+      - name: Report failure summary
         if: failure()
         run: |
-          echo "Translation alert job failed at $(date)"
+          echo "::error::Translation alert job failed at $(date -u '+%d/%m/%Y %H:%M UTC')"
+          echo "Check the logs above for details on which step failed."
           exit 1
