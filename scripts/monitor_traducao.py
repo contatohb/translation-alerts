@@ -38,6 +38,14 @@ HEADERS = {
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "Cache-Control": "max-age=0",
+    # Client Hints do Chrome — necessários para contornar o fingerprint do Translators Café
+    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 }
 TIMEOUT = 25
 SLEEP   = 0.8
@@ -856,71 +864,36 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
     seen_ids: set = set()
 
     # Montar sessão com cookie LGN (login persistente) se disponível
+    # Os headers HEADERS já incluem os Client Hints do Chrome que desbloqueiam o TC
     session = requests.Session()
+    session.headers.update(HEADERS)
+    session.headers.update({"Referer": "https://www.translatorscafe.com/cafe/"})
     if TC_COOKIE_LGN:
-        session.cookies.set("LGN", TC_COOKIE_LGN, domain="www.translatorscafe.com")
+        session.cookies.set("LGN", TC_COOKIE_LGN, domain="translatorscafe.com")
         session.cookies.set("LNG", "UILng=en", domain="www.translatorscafe.com")
         logger.info("Translators Café: usando cookie LGN persistente")
     else:
         # Tentar login via requests como fallback
         logado = _tc_fazer_login(session)
         if not logado:
-            erros.append("Translators Café: cookie LGN não configurado e login via requests falhou")
+            logger.info("Translators Café: cookie LGN não configurado — tentando acesso público")
 
-    # Obter lista de vagas via RSS (não bloqueado por IP)
+    # Obter lista de vagas via scraping direto (RSS não está disponível publicamente)
     job_ids_relevantes: List[Tuple[str, str, str, str]] = []  # (job_id, titulo, pares_desc, pub_date)
     try:
-        resp_rss = requests.get(
-            TC_RSS_URL,
-            headers={**HEADERS, "Cookie": f"LGN={TC_COOKIE_LGN}; LNG=UILng%3Den" if TC_COOKIE_LGN else ""},
-            timeout=TIMEOUT,
-        )
-        if resp_rss.status_code == 200 and "<rss" in resp_rss.text[:200]:
-            root = ET.fromstring(resp_rss.content)
-            ns = ""
-            items = root.findall(f"{ns}channel/{ns}item") or root.findall("channel/item")
-            logger.info(f"Translators Café RSS: {len(items)} item(ns) encontrado(s)")
-            for item in items:
-                link = (item.findtext("link") or "").strip()
-                titulo = (item.findtext("title") or "").strip()
-                desc = (item.findtext("description") or "").strip()
-                pub_date = (item.findtext("pubDate") or "").strip()
-                m = re.search(r'Job=(\d+)', link)
-                if not m:
-                    continue
-                job_id = m.group(1)
-                # Filtrar por idiomas relevantes na descrição do RSS
-                desc_clean = re.sub(r'<[^>]+>', ' ', desc)
-                # Aceitar vagas com PT, EN ou ES na descrição
-                if re.search(r'\b(Portuguese|English|Spanish|Português|Inglês|Espanhol)\b', desc_clean, re.IGNORECASE):
-                    job_ids_relevantes.append((job_id, titulo, desc_clean, pub_date))
-        else:
-            # TC bloqueia IPs de datacenter (403) — registrar como aviso informativo
-            status = resp_rss.status_code
-            if status == 403:
-                erros.append("Translators Café: IP de datacenter bloqueado (403) — fonte indisponível neste ambiente")
-                logger.info("Translators Café: IP bloqueado pelo TC — pulando (normal em GitHub Actions)")
-                return vagas, erros
-            else:
-                erros.append(f"Translators Café RSS: resposta inesperada (status {status})")
-                raise ValueError(f"RSS retornou status {status}")
-    except ValueError:
-        # Erro já registrado acima; tentar scraping direto apenas se não for bloqueio 403
-        if any("bloqueado (403)" in e for e in erros):
-            return vagas, erros
-        # Fallback: scraping da página de vagas (método antigo)
         for page in range(1, 6):
             url = TC_JOBS_URL if page == 1 else f"{TC_JOBS_URL}&Page={page}"
             try:
-                resp = session.get(url, headers={**HEADERS, "Referer": TC_JOBS_URL}, timeout=TIMEOUT)
-                if resp.status_code == 403:
-                    erros.append("Translators Café: IP de datacenter bloqueado (403) — fonte indisponível neste ambiente")
-                    return vagas, erros
-                resp.raise_for_status()
+                resp = session.get(url, timeout=TIMEOUT)
+                if resp.status_code != 200 or len(resp.content) < 500:
+                    if resp.status_code == 403:
+                        erros.append(f"Translators Café: acesso bloqueado (403) na página {page}")
+                    break
             except Exception as e2:
                 erros.append(f"Translators Café página {page}: erro — {e2}")
                 break
             soup = BeautifulSoup(resp.content, "html.parser")
+            vagas_pagina = 0
             for a in soup.find_all("a", href=True):
                 if 'SelectedJob.asp' not in a.get('href', ''):
                     continue
@@ -930,7 +903,11 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
                 job_id = m.group(1)
                 titulo = a.get_text(strip=True)
                 job_ids_relevantes.append((job_id, titulo, "", ""))
+                vagas_pagina += 1
+            if vagas_pagina == 0:
+                break  # Sem mais vagas
             time.sleep(SLEEP)
+        logger.info(f"Translators Café: {len(job_ids_relevantes)} vaga(s) encontrada(s) via scraping")
     except Exception as exc:
         erros.append(f"Translators Café: erro inesperado — {exc}")
         return vagas, erros
@@ -960,10 +937,13 @@ def _scrape_translators_cafe() -> Tuple[List[Dict], List[str]]:
 
         # Completar pares a partir dos detalhes se RSS não forneceu
         if not pares_relevantes:
-            src_d = detalhes.get("idioma_origem", "")
-            tgt_d = detalhes.get("idioma_destino", "")
-            if src_d and tgt_d and _par_relevante(src_d, tgt_d):
-                pares_relevantes.append((src_d, tgt_d))
+            # Parsear o campo 'idiomas' dos detalhes (ex: "English>Portuguese Dutch>English")
+            idiomas_str = detalhes.get("idiomas", "")
+            for par_str in re.split(r'\s+', idiomas_str):
+                if '>' in par_str:
+                    src_d, tgt_d = _parse_par_tc(par_str)
+                    if _par_relevante(src_d, tgt_d):
+                        pares_relevantes.append((src_d, tgt_d))
 
         # Fallback: par do título
         if not pares_relevantes:
