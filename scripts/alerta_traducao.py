@@ -328,6 +328,7 @@ def enviar_smtp(
     assunto: str,
     html: str,
     texto_simples: str = "",
+    vagas: Optional[List[Dict]] = None,
 ) -> bool:
     """
     Envia o email via SMTP SSL (Gmail App Password).
@@ -365,17 +366,60 @@ def enviar_smtp(
         msg["To"] = GMAIL_RECIPIENT
 
         n_vagas = assunto.split("]")[1].strip().split(" ")[0] if "]" in assunto else "?"
+
+        # Resumo por fonte
+        por_fonte: Dict[str, int] = {}
+        if vagas:
+            from collections import Counter as _Counter
+            por_fonte = dict(_Counter(v.get("fonte", "") for v in vagas))
+        n_contato = sum(
+            1 for v in (vagas or [])
+            if v.get("contato_descoberto", {}).get("email")
+            or v.get("contato_descoberto", {}).get("site")
+        )
+
+        # Data formatada
+        from datetime import date as _date2
+        data_fmt = _date2.today().strftime("%d/%m/%Y")
+
+        # Linhas de resumo por fonte
+        fontes_html = ""
+        for fonte_nome in ["ProZ.com", "Translators Café", "Translation Directory"]:
+            n = por_fonte.get(fonte_nome, 0)
+            if n:
+                fontes_html += f'<tr><td style="padding:4px 12px 4px 0;color:#555;">{fonte_nome}</td><td style="padding:4px 0;font-weight:600;color:#1a3a5c;">{n} vaga{"s" if n != 1 else ""}</td></tr>'
+
         corpo_html = f"""
-        <html><body style="font-family:Arial,sans-serif;color:#222;padding:24px;">
-        <h2 style="color:#1a3a5c;">Alerta Diário de Vagas de Tradução</h2>
-        <p>Foram encontradas <strong>{n_vagas} nova(s) vaga(s)</strong> hoje.</p>
-        <p>O conteúdo completo está no arquivo PDF em anexo
-        (<em>vagas_traducao.pdf</em>).</p>
-        <p style="color:#888;font-size:12px;">O PDF foi gerado automaticamente porque
-        o volume de vagas de hoje excede o limite de exibição inline do Gmail
-        ({_GMAIL_INLINE_LIMIT_KB} KB). Abra o anexo para ver todas as vagas com
-        design premium completo.</p>
-        </body></html>
+        <html>
+        <body style="font-family:Arial,sans-serif;color:#222;margin:0;padding:0;background:#f4f6f9;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:32px 0;">
+            <tr><td align="center">
+              <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <!-- Cabeçalho -->
+                <tr><td style="background:linear-gradient(135deg,#1a3a5c 0%,#2e6da4 100%);padding:28px 32px;">
+                  <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;color:#a8c8e8;text-transform:uppercase;">Alerta Diário · Tradução</p>
+                  <h1 style="margin:0;font-size:22px;color:#ffffff;font-weight:700;">Vagas de Tradução PT · EN · ES</h1>
+                  <p style="margin:6px 0 0 0;font-size:13px;color:#c8dff0;">{data_fmt}</p>
+                </td></tr>
+                <!-- Corpo -->
+                <tr><td style="padding:28px 32px;">
+                  <p style="margin:0 0 6px 0;font-size:14px;color:#555;">Foram encontradas</p>
+                  <p style="margin:0 0 20px 0;font-size:36px;font-weight:800;color:#1a3a5c;line-height:1;">{n_vagas} <span style="font-size:18px;font-weight:400;color:#555;">nova(s) vaga(s)</span></p>
+                  <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+                    {fontes_html}
+                  </table>
+                  <p style="margin:0 0 8px 0;font-size:14px;color:#333;">O relatório completo com todas as vagas e design premium está no <strong>PDF em anexo</strong>.</p>
+                  {'<p style="margin:0;font-size:13px;color:#2e6da4;">&#10003; ' + str(n_contato) + ' contato(s) descoberto(s) via busca reversa</p>' if n_contato else ''}
+                </td></tr>
+                <!-- Rodapé -->
+                <tr><td style="background:#f4f6f9;padding:16px 32px;border-top:1px solid #e8edf2;">
+                  <p style="margin:0;font-size:11px;color:#999;">Sistema de Alertas de Tradução · Hudson Borges · Pares: PT ↔ EN · PT ↔ ES · EN ↔ ES</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </body>
+        </html>
         """
         msg.attach(MIMEText(corpo_html, "html", "utf-8"))
 
@@ -554,7 +598,7 @@ def main():
 
     # Enviar via SMTP (HTML completo, sem limite de tamanho)
     logger.info(f"Enviando email via SMTP para {GMAIL_RECIPIENT}...")
-    enviado = enviar_smtp(assunto, html, texto_simples)
+    enviado = enviar_smtp(assunto, html, texto_simples, vagas=novas)
 
     duracao = round(time.time() - inicio_total, 1)
     n_contato = sum(
@@ -580,6 +624,7 @@ def main():
             texto_simples=texto_simples,
             enviar_smtp_fn=enviar_smtp,
             sb=sb,
+            vagas_para_smtp=novas,
         )
         novas = resultado_auditoria["vagas_finais"]
         erros = resultado_auditoria["erros_finais"]

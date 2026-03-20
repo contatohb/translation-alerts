@@ -236,6 +236,7 @@ def executar_auditoria_completa(
     texto_simples: str,
     enviar_smtp_fn,
     sb=None,
+    vagas_para_smtp=None,
 ) -> Dict:
     """
     Executa a auditoria completa pós-envio e corrige problemas automaticamente.
@@ -295,8 +296,10 @@ def executar_auditoria_completa(
     # ── 3. Auditar envio SMTP ─────────────────────────────────────
     if not email_enviado:
         logger.info("Auditoria: email não foi enviado — tentando reenvio...")
+        _vagas_reenvio = vagas_para_smtp or vagas_corrigidas
         ok_reenvio, acoes_smtp = auditar_envio(
-            assunto, html_auditado, texto_simples, enviar_smtp_fn
+            assunto, html_auditado, texto_simples,
+            lambda a, h, t: enviar_smtp_fn(a, h, t, vagas=_vagas_reenvio)
         )
         todas_acoes.extend(acoes_smtp)
         resultado["email_enviado"] = ok_reenvio
@@ -314,8 +317,10 @@ def executar_auditoria_completa(
             f"{len(vagas_originais)} nova(s)",
             f"{len(vagas_corrigidas)} nova(s) [+{n_adicionais} recuperada(s)]"
         )
+        _vagas_reenvio2 = vagas_para_smtp or vagas_corrigidas
         ok_reenvio, acoes_smtp = auditar_envio(
-            assunto_reenvio, html_auditado, texto_simples, enviar_smtp_fn
+            assunto_reenvio, html_auditado, texto_simples,
+            lambda a, h, t: enviar_smtp_fn(a, h, t, vagas=_vagas_reenvio2)
         )
         todas_acoes.extend(acoes_smtp)
         resultado["email_enviado"] = ok_reenvio
