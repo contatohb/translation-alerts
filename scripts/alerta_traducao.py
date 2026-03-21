@@ -593,8 +593,28 @@ def main():
     # Gerar texto simples (fallback)
     texto_simples = gerar_texto_simples(novas, erros, date_str)
 
-    # Montar assunto
-    assunto = f"[Tradução] {len(novas)} nova(s) vaga(s) — {date_str}"
+    # Montar assunto — usar o mesmo critério de contagem do corpo do email:
+    # vagas do TD sem contato são omitidas do corpo, então não devem contar no assunto
+    from email_template import _filtrar_vagas_td as _filtrar_td
+    novas_exibidas = _filtrar_td(novas)
+    n_exibidas = len(novas_exibidas)
+
+    # Se todas as vagas novas são do TD sem contato, não há nada a exibir → não enviar
+    if n_exibidas == 0:
+        logger.info("Vagas novas existem, mas todas são do TD sem contato — email não enviado")
+        if sb:
+            sb.registrar_execucao({
+                "vagas_novas": 0,
+                "vagas_proz": 0,
+                "vagas_tc": 0,
+                "vagas_td": 0,
+                "contatos_descobertos": 0,
+                "email_enviado": False,
+                "duracao_segundos": round(time.time() - inicio_total, 1),
+            })
+        return 0
+
+    assunto = f"[Tradução] {n_exibidas} nova(s) vaga(s) — {date_str}"
 
     # Enviar via SMTP (HTML completo, sem limite de tamanho)
     logger.info(f"Enviando email via SMTP para {GMAIL_RECIPIENT}...")
