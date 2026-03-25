@@ -10,18 +10,16 @@ Responsabilidades:
   5. Registrar todas as ações de auditoria no Supabase
 
 Critérios de auditoria:
-  - Fontes com 0 vagas quando deveriam ter (ProZ, TC, TD)
+  - Fontes com 0 vagas TOTAIS coletadas quando deveriam ter (erro real de scraping)
   - Erros de bloqueio 403 / IP bloqueado
   - Erros de encoding / parsing
   - Email não enviado (falha SMTP)
   - HTML gerado com tamanho anômalo (< 5 KB ou > 600 KB)
-  - Nenhuma vaga com contato descoberto (quando há empresas identificadas)
 
-Estratégias de autocorreção:
-  - ProZ 0 vagas → tentar Selenium headless como fallback
-  - TC 0 vagas + erro 403 → tentar com retry e backoff (IP rotaciona a cada run)
-  - Falha SMTP → retry com backoff de 30s (até 3 tentativas)
-  - HTML muito grande → comprimir removendo vagas sem contato até caber
+IMPORTANTE: A auditoria usa `vagas_totais` (antes da deduplicação) para detectar
+erros reais de coleta, e `vagas_novas` (após deduplicação) para o reenvio.
+Vagas recuperadas pelo fallback Selenium SEMPRE passam pelo filtro de deduplicação
+antes de serem incluídas no reenvio — isso evita reenviar vagas já alertadas.
 """
 from __future__ import annotations
 
@@ -36,11 +34,6 @@ logger = logging.getLogger("auditoria")
 # Limiares de auditoria
 # ─────────────────────────────────────────────────────────────────
 
-LIMIAR_VAGAS_MINIMO_POR_FONTE = {
-    "ProZ.com": 1,
-    "Translators Café": 1,
-    "Translation Directory": 5,
-}
 LIMIAR_HTML_MIN_KB = 5
 LIMIAR_HTML_MAX_KB = 600
 MAX_TENTATIVAS_SMTP = 3
@@ -52,22 +45,32 @@ BACKOFF_SMTP_SEGUNDOS = 30
 # ─────────────────────────────────────────────────────────────────
 
 def auditar_coleta(
-    vagas: List[Dict],
+    vagas_totais: List[Dict],
+    vagas_novas: List[Dict],
     erros: List[str],
+    sb=None,
 ) -> Tuple[List[Dict], List[str], List[str]]:
     """
     Audita as vagas coletadas e tenta corrigir problemas automaticamente.
 
-    Retorna (vagas_corrigidas, erros_corrigidos, acoes_tomadas).
+    Parâmetros:
+      vagas_totais: todas as vagas coletadas (antes da deduplicação)
+      vagas_novas:  vagas novas (após deduplicação, já enviadas no email)
+      erros:        lista de erros da coleta
+      sb:           cliente Supabase para deduplicação das vagas recuperadas
+
+    Retorna (vagas_novas_corrigidas, erros_corrigidos, acoes_tomadas).
+    As vagas retornadas já passaram pelo filtro de deduplicação.
     """
     acoes: List[str] = []
-    por_fonte = Counter(v.get("fonte", "") for v in vagas)
 
-    # ── ProZ.com: 0 vagas → tentar Selenium ──────────────────────
-    n_proz = por_fonte.get("ProZ.com", 0)
-    erros_proz = [e for e in erros if "proz" in e.lower()]
-    if n_proz == 0:
-        logger.info("Auditoria: ProZ.com retornou 0 vagas — tentando Selenium como fallback...")
+    # Usar vagas_totais para detectar erros reais de coleta (0 vagas coletadas)
+    por_fonte_total = Counter(v.get("fonte", "") for v in vagas_totais)
+
+    # ── ProZ.com: 0 vagas TOTAIS coletadas → tentar Selenium ─────
+    n_proz_total = por_fonte_total.get("ProZ.com", 0)
+    if n_proz_total == 0:
+        logger.info("Auditoria: ProZ.com retornou 0 vagas totais — tentando Selenium como fallback...")
         try:
             from selenium_scrapers import scrape_proz_selenium
             from monitor_traducao import (
@@ -81,10 +84,16 @@ def auditar_coleta(
                 _extrair_empresa, _formatar_data, buscar_contato_empresa,
             )
             if vagas_sel:
-                vagas = [v for v in vagas if v.get("fonte") != "ProZ.com"] + vagas_sel
-                erros = [e for e in erros if "proz" not in e.lower()] + erros_sel
-                acoes.append(f"ProZ.com: Selenium recuperou {len(vagas_sel)} vaga(s)")
-                logger.info(f"Auditoria: ProZ.com Selenium → {len(vagas_sel)} vaga(s)")
+                # Deduplicar: só incluir vagas que ainda não foram alertadas
+                vagas_sel_novas = _deduplicar(vagas_sel, sb)
+                if vagas_sel_novas:
+                    vagas_novas = vagas_novas + vagas_sel_novas
+                    erros = [e for e in erros if "proz" not in e.lower()] + erros_sel
+                    acoes.append(f"ProZ.com: Selenium recuperou {len(vagas_sel)} total, {len(vagas_sel_novas)} nova(s) após deduplicação")
+                    logger.info(f"Auditoria: ProZ.com Selenium → {len(vagas_sel_novas)} nova(s)")
+                else:
+                    acoes.append(f"ProZ.com: Selenium recuperou {len(vagas_sel)} vaga(s), mas todas já foram alertadas antes")
+                    logger.info("Auditoria: ProZ.com Selenium → 0 novas após deduplicação")
             else:
                 acoes.append(f"ProZ.com: Selenium também retornou 0 vagas ({'; '.join(erros_sel) if erros_sel else 'sem erro específico'})")
                 logger.warning("Auditoria: ProZ.com Selenium também retornou 0 vagas")
@@ -94,33 +103,66 @@ def auditar_coleta(
             acoes.append(f"ProZ.com: erro no fallback Selenium — {exc}")
             logger.error(f"Auditoria ProZ Selenium: {exc}")
 
-    # ── Translators Café: IP de datacenter bloqueado — sem retry ────────────────
-    # O TC bloqueia todos os IPs de datacenter (AWS/Azure/GitHub Actions).
-    # Retry seria inútil e desperdiçaria tempo de execução.
-    n_tc = por_fonte.get("Translators Café", 0)
+    # ── Translators Café: IP de datacenter bloqueado — sem retry ─
+    n_tc_total = por_fonte_total.get("Translators Café", 0)
     erros_tc = [e for e in erros if "translators" in e.lower() or "café" in e.lower()]
     tem_bloqueio_tc = any("403" in e or "bloqueado" in e.lower() for e in erros_tc)
-    if n_tc == 0 and tem_bloqueio_tc:
+    if n_tc_total == 0 and tem_bloqueio_tc:
         logger.info("Auditoria: TC bloqueado por IP de datacenter — retry não será tentado (comportamento esperado)")
 
-    # ── Translation Directory: 0 vagas → retry imediato ──────────
-    n_td = por_fonte.get("Translation Directory", 0)
-    if n_td == 0:
-        logger.info("Auditoria: Translation Directory retornou 0 vagas — tentando novamente...")
+    # ── Translation Directory: 0 vagas TOTAIS → retry imediato ──
+    n_td_total = por_fonte_total.get("Translation Directory", 0)
+    if n_td_total == 0:
+        logger.info("Auditoria: Translation Directory retornou 0 vagas totais — tentando novamente...")
         try:
             from monitor_traducao import _scrape_translation_directory
             vagas_td_retry, erros_td_retry = _scrape_translation_directory()
             if vagas_td_retry:
-                vagas = [v for v in vagas if v.get("fonte") != "Translation Directory"] + vagas_td_retry
-                erros = [e for e in erros if "translation directory" not in e.lower()] + erros_td_retry
-                acoes.append(f"Translation Directory: retry recuperou {len(vagas_td_retry)} vaga(s)")
-                logger.info(f"Auditoria: TD retry → {len(vagas_td_retry)} vaga(s)")
+                # Deduplicar: só incluir vagas que ainda não foram alertadas
+                vagas_td_novas = _deduplicar(vagas_td_retry, sb)
+                if vagas_td_novas:
+                    vagas_novas = [v for v in vagas_novas if v.get("fonte") != "Translation Directory"] + vagas_td_novas
+                    erros = [e for e in erros if "translation directory" not in e.lower()] + erros_td_retry
+                    acoes.append(f"Translation Directory: retry recuperou {len(vagas_td_retry)} total, {len(vagas_td_novas)} nova(s) após deduplicação")
+                    logger.info(f"Auditoria: TD retry → {len(vagas_td_novas)} nova(s)")
+                else:
+                    acoes.append(f"Translation Directory: retry recuperou {len(vagas_td_retry)} vaga(s), mas todas já foram alertadas antes")
             else:
                 acoes.append("Translation Directory: retry também retornou 0 vagas")
         except Exception as exc:
             acoes.append(f"Translation Directory: erro no retry — {exc}")
 
-    return vagas, erros, acoes
+    return vagas_novas, erros, acoes
+
+
+def _deduplicar(vagas: List[Dict], sb=None) -> List[Dict]:
+    """
+    Filtra vagas já alertadas anteriormente.
+    Usa Supabase se disponível, senão arquivo local.
+    NÃO marca as vagas como vistas (isso é feito apenas no fluxo principal).
+    """
+    if sb is not None:
+        try:
+            urls_vistas = sb.get_urls_vistas()
+            return [v for v in vagas if v.get("link_vaga") and v["link_vaga"] not in urls_vistas]
+        except Exception:
+            pass
+
+    # Fallback: arquivo local
+    try:
+        import json, os
+        seen_path = os.path.join(os.path.dirname(__file__), "..", "data", "traducao_seen.json")
+        seen_path = os.path.normpath(seen_path)
+        if os.path.exists(seen_path):
+            with open(seen_path, "r", encoding="utf-8") as f:
+                seen = json.load(f)
+            return [v for v in vagas if v.get("link_vaga") and v["link_vaga"] not in seen]
+    except Exception:
+        pass
+
+    # Se não conseguiu verificar, retornar vazio (conservador: não reenviar)
+    logger.warning("Auditoria: não foi possível verificar deduplicação — vagas recuperadas descartadas por segurança")
+    return []
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -237,9 +279,15 @@ def executar_auditoria_completa(
     enviar_smtp_fn,
     sb=None,
     vagas_para_smtp=None,
+    vagas_totais: Optional[List[Dict]] = None,
 ) -> Dict:
     """
     Executa a auditoria completa pós-envio e corrige problemas automaticamente.
+
+    Parâmetros:
+      vagas_originais: vagas novas já enviadas no email (após deduplicação)
+      vagas_totais:    todas as vagas coletadas (antes da deduplicação) —
+                       usado para detectar erros reais de coleta
 
     Retorna dict com:
       - vagas_finais: lista de vagas após correções
@@ -261,16 +309,22 @@ def executar_auditoria_completa(
     todas_acoes: List[str] = []
     logger.info("=== AUDITORIA PÓS-ENVIO INICIADA ===")
 
+    # Usar vagas_totais para detectar erros reais; fallback para vagas_originais
+    _vagas_totais = vagas_totais if vagas_totais is not None else vagas_originais
+
     # ── 1. Auditar coleta de vagas ────────────────────────────────
     vagas_corrigidas, erros_corrigidos, acoes_coleta = auditar_coleta(
-        vagas_originais, erros_originais
+        vagas_totais=_vagas_totais,
+        vagas_novas=vagas_originais,
+        erros=erros_originais,
+        sb=sb,
     )
     todas_acoes.extend(acoes_coleta)
 
     novas_vagas_encontradas = len(vagas_corrigidas) > len(vagas_originais)
     if novas_vagas_encontradas:
         logger.info(
-            f"Auditoria: {len(vagas_corrigidas) - len(vagas_originais)} vaga(s) adicionais recuperadas"
+            f"Auditoria: {len(vagas_corrigidas) - len(vagas_originais)} vaga(s) adicionais recuperadas (já deduplicadas)"
         )
         resultado["reenvio_necessario"] = True
         resultado["vagas_finais"] = vagas_corrigidas
@@ -309,13 +363,14 @@ def executar_auditoria_completa(
             logger.error("Auditoria: reenvio falhou após todas as tentativas")
 
     elif resultado["reenvio_necessario"]:
-        # Reenviar com vagas adicionais
+        # Reenviar com vagas adicionais (já deduplicadas)
         logger.info("Auditoria: reenviando email com vagas adicionais recuperadas...")
-        por_fonte_novas = Counter(v.get("fonte", "") for v in vagas_corrigidas)
         n_adicionais = len(vagas_corrigidas) - len(vagas_originais)
+        n_exibidas_originais = len(vagas_originais)
+        n_exibidas_total = len(vagas_corrigidas)
         assunto_reenvio = assunto.replace(
-            f"{len(vagas_originais)} nova(s)",
-            f"{len(vagas_corrigidas)} nova(s) [+{n_adicionais} recuperada(s)]"
+            f"{n_exibidas_originais} nova(s)",
+            f"{n_exibidas_total} nova(s) [+{n_adicionais} recuperada(s)]"
         )
         _vagas_reenvio2 = vagas_para_smtp or vagas_corrigidas
         ok_reenvio, acoes_smtp = auditar_envio(

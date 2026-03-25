@@ -239,14 +239,44 @@ def _save_seen_local(seen: dict, path: str) -> None:
         json.dump(seen, f, ensure_ascii=False, indent=2)
 
 
+def _prazo_expirado(vaga: Dict) -> bool:
+    """
+    Retorna True se a vaga tem prazo definido e ele já passou.
+    Vagas sem prazo definido são sempre incluídas.
+    """
+    prazo = vaga.get("prazo", "").strip()
+    if not prazo:
+        return False
+    try:
+        # Formato esperado: dd/mm/aaaa
+        from datetime import date
+        partes = prazo.split("/")
+        if len(partes) == 3:
+            dd, mm, yyyy = int(partes[0]), int(partes[1]), int(partes[2])
+            data_prazo = date(yyyy, mm, dd)
+            hoje = date.today()
+            if data_prazo < hoje:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def filtrar_e_registrar_novas(
     vagas: List[Dict],
     sb: Optional[SupabaseClient],
 ) -> Tuple[List[Dict], bool]:
     """
     Filtra vagas novas e registra as novas no Supabase (ou arquivo local).
+    Remove vagas com prazo expirado antes de qualquer outra filtragem.
     Retorna (vagas_novas, usou_supabase).
     """
+    # Remover vagas com prazo expirado
+    n_antes = len(vagas)
+    vagas = [v for v in vagas if not _prazo_expirado(v)]
+    n_expiradas = n_antes - len(vagas)
+    if n_expiradas:
+        logger.info(f"Filtro de prazo: {n_expiradas} vaga(s) com prazo expirado removida(s)")
     if sb is not None:
         try:
             urls_vistas = sb.get_urls_vistas()
@@ -645,6 +675,7 @@ def main():
             enviar_smtp_fn=enviar_smtp,
             sb=sb,
             vagas_para_smtp=novas,
+            vagas_totais=vagas,  # todas as vagas coletadas (antes da deduplicação)
         )
         novas = resultado_auditoria["vagas_finais"]
         erros = resultado_auditoria["erros_finais"]
