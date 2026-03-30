@@ -31,7 +31,7 @@ import subprocess
 import sys
 
 # ── Auto-instalação de dependências ausentes ─────────────────────
-_DEPS = ["httpx[http2]", "selenium", "lxml", "webdriver-manager", "weasyprint"]
+_DEPS = ["httpx[http2]", "selenium", "lxml", "webdriver-manager"]
 for _dep in _DEPS:
     try:
         __import__(_dep.split("[")[0].replace("-", "_"))
@@ -49,8 +49,6 @@ import smtplib
 import time
 from collections import Counter
 from datetime import date, datetime, timezone
-from email import encoders
-from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, List, Optional, Tuple
@@ -328,32 +326,6 @@ def _get_gmail_credentials() -> Tuple[str, str]:
     return user, password.replace(" ", "")
 
 
-# Limite do Gmail para exibição inline sem truncamento
-_GMAIL_INLINE_LIMIT_KB = 95  # margem de segurança abaixo dos 102 KB do Gmail
-
-
-def _gerar_pdf_do_html(html: str, nome_arquivo: str = "vagas_traducao.pdf") -> Optional[bytes]:
-    """
-    Converte o HTML premium em PDF usando weasyprint.
-    Retorna os bytes do PDF ou None em caso de erro.
-    """
-    try:
-        from weasyprint import HTML as WeasyprintHTML
-        import tempfile, os
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            tmp_path = f.name
-        WeasyprintHTML(string=html).write_pdf(tmp_path)
-        with open(tmp_path, "rb") as f:
-            pdf_bytes = f.read()
-        os.unlink(tmp_path)
-        size_kb = len(pdf_bytes) // 1024
-        logger.info(f"PDF gerado: {size_kb} KB ({nome_arquivo})")
-        return pdf_bytes
-    except Exception as exc:
-        logger.error(f"Erro ao gerar PDF: {exc}")
-        return None
-
-
 def enviar_smtp(
     assunto: str,
     html: str,
@@ -363,11 +335,10 @@ def enviar_smtp(
     """
     Envia o email via SMTP SSL (Gmail App Password).
 
-    Estratégia de envio:
-    - Se o HTML <= 95 KB: envia o HTML diretamente no corpo do email.
-    - Se o HTML > 95 KB: gera um PDF com o conteúdo completo e envia como
-      anexo, com corpo simples informando que o conteúdo está no PDF.
-      Isso evita o truncamento do Gmail (limite de ~102 KB).
+    O template HTML premium é sempre enviado diretamente no corpo do email
+    (multipart/alternative com fallback texto simples).
+    O Gmail exibe um link "Ver mensagem completa" para emails > 102 KB,
+    o que é aceitável e muito melhor que enviar um PDF em anexo.
     """
     try:
         gmail_user, gmail_password = _get_gmail_credentials()
@@ -376,104 +347,17 @@ def enviar_smtp(
         return False
 
     size_kb = len(html.encode("utf-8")) // 1024
-    usar_pdf = size_kb > _GMAIL_INLINE_LIMIT_KB
+    logger.info(f"HTML premium: {size_kb} KB — enviando inline no corpo do email")
 
-    if usar_pdf:
-        logger.info(
-            f"HTML com {size_kb} KB > {_GMAIL_INLINE_LIMIT_KB} KB — "
-            f"convertendo para PDF para evitar truncamento do Gmail"
-        )
-        pdf_bytes = _gerar_pdf_do_html(html)
-        if pdf_bytes is None:
-            logger.warning("Falha ao gerar PDF — enviando HTML mesmo assim")
-            usar_pdf = False
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = assunto
+    msg["From"] = f"Sistema de Alertas de Tradução <{gmail_user}>"
+    msg["To"] = GMAIL_RECIPIENT
 
-    if usar_pdf:
-        # Email com PDF anexado e corpo simples
-        msg = MIMEMultipart("mixed")
-        msg["Subject"] = assunto
-        msg["From"] = f"Sistema de Alertas de Tradução <{gmail_user}>"
-        msg["To"] = GMAIL_RECIPIENT
-
-        n_vagas = assunto.split("]")[1].strip().split(" ")[0] if "]" in assunto else "?"
-
-        # Resumo por fonte
-        por_fonte: Dict[str, int] = {}
-        if vagas:
-            from collections import Counter as _Counter
-            por_fonte = dict(_Counter(v.get("fonte", "") for v in vagas))
-        n_contato = sum(
-            1 for v in (vagas or [])
-            if v.get("contato_descoberto", {}).get("email")
-            or v.get("contato_descoberto", {}).get("site")
-        )
-
-        # Data formatada
-        from datetime import date as _date2
-        data_fmt = _date2.today().strftime("%d/%m/%Y")
-
-        # Linhas de resumo por fonte
-        fontes_html = ""
-        for fonte_nome in ["ProZ.com", "Translators Café", "Translation Directory"]:
-            n = por_fonte.get(fonte_nome, 0)
-            if n:
-                fontes_html += f'<tr><td style="padding:4px 12px 4px 0;color:#555;">{fonte_nome}</td><td style="padding:4px 0;font-weight:600;color:#1a3a5c;">{n} vaga{"s" if n != 1 else ""}</td></tr>'
-
-        corpo_html = f"""
-        <html>
-        <body style="font-family:Arial,sans-serif;color:#222;margin:0;padding:0;background:#f4f6f9;">
-          <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:32px 0;">
-            <tr><td align="center">
-              <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
-                <!-- Cabeçalho -->
-                <tr><td style="background:linear-gradient(135deg,#1a3a5c 0%,#2e6da4 100%);padding:28px 32px;">
-                  <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;color:#a8c8e8;text-transform:uppercase;">Alerta Diário · Tradução</p>
-                  <h1 style="margin:0;font-size:22px;color:#ffffff;font-weight:700;">Vagas de Tradução PT · EN · ES</h1>
-                  <p style="margin:6px 0 0 0;font-size:13px;color:#c8dff0;">{data_fmt}</p>
-                </td></tr>
-                <!-- Corpo -->
-                <tr><td style="padding:28px 32px;">
-                  <p style="margin:0 0 6px 0;font-size:14px;color:#555;">Foram encontradas</p>
-                  <p style="margin:0 0 20px 0;font-size:36px;font-weight:800;color:#1a3a5c;line-height:1;">{n_vagas} <span style="font-size:18px;font-weight:400;color:#555;">nova(s) vaga(s)</span></p>
-                  <table cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
-                    {fontes_html}
-                  </table>
-                  <p style="margin:0 0 8px 0;font-size:14px;color:#333;">O relatório completo com todas as vagas e design premium está no <strong>PDF em anexo</strong>.</p>
-                  {'<p style="margin:0;font-size:13px;color:#2e6da4;">&#10003; ' + str(n_contato) + ' contato(s) descoberto(s) via busca reversa</p>' if n_contato else ''}
-                </td></tr>
-                <!-- Rodapé -->
-                <tr><td style="background:#f4f6f9;padding:16px 32px;border-top:1px solid #e8edf2;">
-                  <p style="margin:0;font-size:11px;color:#999;">Sistema de Alertas de Tradução · Hudson Borges · Pares: PT ↔ EN · PT ↔ ES · EN ↔ ES</p>
-                </td></tr>
-              </table>
-            </td></tr>
-          </table>
-        </body>
-        </html>
-        """
-        msg.attach(MIMEText(corpo_html, "html", "utf-8"))
-
-        # Anexar o PDF
-        from datetime import date as _date
-        nome_pdf = f"vagas_traducao_{_date.today().strftime('%Y-%m-%d')}.pdf"
-        part = MIMEBase("application", "pdf")
-        part.set_payload(pdf_bytes)
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f'attachment; filename="{nome_pdf}"')
-        msg.attach(part)
-
-        logger.info(f"Enviando email com PDF anexado ({len(pdf_bytes)//1024} KB)...")
-    else:
-        # Email com HTML inline (comportamento padrão)
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = assunto
-        msg["From"] = f"Sistema de Alertas de Tradução <{gmail_user}>"
-        msg["To"] = GMAIL_RECIPIENT
-
-        if not texto_simples:
-            texto_simples = f"Alerta de vagas de tradução — {assunto}"
-        msg.attach(MIMEText(texto_simples, "plain", "utf-8"))
-        msg.attach(MIMEText(html, "html", "utf-8"))
+    if not texto_simples:
+        texto_simples = f"Alerta de vagas de tradução — {assunto}"
+    msg.attach(MIMEText(texto_simples, "plain", "utf-8"))
+    msg.attach(MIMEText(html, "html", "utf-8"))
 
     try:
         inicio = time.time()
@@ -481,10 +365,7 @@ def enviar_smtp(
             server.login(gmail_user, gmail_password)
             server.sendmail(gmail_user, GMAIL_RECIPIENT, msg.as_string())
         duracao = time.time() - inicio
-        if usar_pdf:
-            logger.info(f"Email com PDF enviado via SMTP em {duracao:.1f}s")
-        else:
-            logger.info(f"Email enviado via SMTP em {duracao:.1f}s — HTML: {size_kb} KB")
+        logger.info(f"Email enviado via SMTP em {duracao:.1f}s — HTML: {size_kb} KB")
         return True
     except smtplib.SMTPAuthenticationError:
         logger.error(
