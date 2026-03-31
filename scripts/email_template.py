@@ -493,6 +493,14 @@ def gerar_html_email(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>Alerta de Vagas de Tradução — {hoje}</title>
+  <style>
+    @media print {{
+      body {{ background:#ffffff !important; font-size:11pt; }}
+      table {{ max-width:100% !important; }}
+      a[href]:after {{ content:" (" attr(href) ")"; font-size:9pt; color:#475569; }}
+      td, th {{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
+    }}
+  </style>
 </head>
 <body style="margin:0;padding:0;background:#f4f4f4;{_FONT}">
   <table width="100%" cellpadding="0" cellspacing="0" border="0"
