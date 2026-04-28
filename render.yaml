@@ -1,0 +1,29 @@
+services:
+  - type: cron
+    name: translation-alerts-daily
+    runtime: python
+    plan: free
+    schedule: "0 11 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd scripts && python alerta_traducao.py
+    envVars:
+      - key: SUPABASE_URL
+        value: https://wuadkgmggkmyglxpxeyh.supabase.co
+      - key: SUPABASE_KEY
+        sync: false
+      - key: GMAIL_USER
+        value: huddsong@gmail.com
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: GMAIL_RECIPIENT
+        sync: false
+      - key: TC_COOKIE_LGN
+        sync: false
+      - key: TC_USERNAME
+        sync: false
+      - key: TC_PASSWORD
+        sync: false
+      - key: PROZ_USERNAME
+        sync: false
+      - key: PROZ_PASSWORD
+        sync: false
