@@ -12,7 +12,7 @@ services:
       - key: SUPABASE_KEY
         sync: false
       - key: GMAIL_USER
-        value: huddsong@gmail.com
+        value: huddsonviana@gmail.com
       - key: GMAIL_APP_PASSWORD
         sync: false
       - key: GMAIL_RECIPIENT

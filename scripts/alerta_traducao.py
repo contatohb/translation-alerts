@@ -18,9 +18,9 @@ Arquitetura de envio (sem dependências do Manus):
 Variáveis de ambiente necessárias (GitHub Actions Secrets):
   SUPABASE_URL          — ex: https://wuadkgmggkmyglxpxeyh.supabase.co
   SUPABASE_KEY          — service_role key do projeto Intellicore
-  GMAIL_USER            — huddsong@gmail.com
+  GMAIL_USER            — huddsonviana@gmail.com
   GMAIL_APP_PASSWORD    — App Password de 16 caracteres (sem espaços)
-  GMAIL_RECIPIENT       — huddsong@gmail.com (pode ser igual ao GMAIL_USER)
+  GMAIL_RECIPIENT       — huddsonviana@gmail.com (pode ser igual ao GMAIL_USER)
 
 Uso:
     python3 alerta_traducao.py
@@ -79,9 +79,9 @@ except Exception:
 
 SUPABASE_URL      = os.getenv("SUPABASE_URL", "https://wuadkgmggkmyglxpxeyh.supabase.co").strip()
 SUPABASE_KEY      = os.getenv("SUPABASE_KEY", "").strip()
-GMAIL_USER        = os.getenv("GMAIL_USER", "huddsong@gmail.com").strip()
+GMAIL_USER        = os.getenv("GMAIL_USER", "huddsonviana@gmail.com").strip()
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
-GMAIL_RECIPIENT   = os.getenv("GMAIL_RECIPIENT", "huddsong@gmail.com").strip()
+GMAIL_RECIPIENT   = os.getenv("GMAIL_RECIPIENT", "huddsonviana@gmail.com").strip()
 
 # Fallback: arquivo local (compatibilidade com execuções sem Supabase)
 SEEN_PATH = os.path.join(_PROJECT_DIR, "data", "traducao_seen.json")
