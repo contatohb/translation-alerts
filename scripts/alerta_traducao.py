@@ -326,6 +326,33 @@ def _get_gmail_credentials() -> Tuple[str, str]:
     return user, password.replace(" ", "")
 
 
+# Mailgun (primário)
+MAILGUN_API_KEY  = os.getenv("MAILGUN_API_KEY", "").strip()
+MAILGUN_DOMAIN   = os.getenv("MAILGUN_DOMAIN", "hb-advisory.com.br").strip()
+FROM_EMAIL       = os.getenv("FROM_EMAIL", "Intellicore Tradução <noreply@hb-advisory.com.br>")
+MAILGUN_BASE_URL = "https://api.mailgun.net/v3"
+
+
+def _send_via_mailgun(subject: str, html_body: str, recipient: str) -> bool:
+    """Envia email via Mailgun (primário, sem dependências locais)."""
+    if not MAILGUN_API_KEY or not MAILGUN_DOMAIN:
+        return False
+    try:
+        import requests as _req
+        url  = f"{MAILGUN_BASE_URL}/{MAILGUN_DOMAIN}/messages"
+        data = {"from": FROM_EMAIL, "to": [recipient], "subject": subject,
+                "html": html_body, "text": " "}
+        resp = _req.post(url, auth=("api", MAILGUN_API_KEY), data=data, timeout=30)
+        if resp.status_code == 200:
+            logger.info(f"Email enviado via Mailgun para {recipient}")
+            return True
+        logger.error(f"Mailgun {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as exc:
+        logger.error(f"Erro Mailgun: {exc}")
+        return False
+
+
 def enviar_smtp(
     assunto: str,
     html: str,
@@ -340,6 +367,11 @@ def enviar_smtp(
     O Gmail exibe um link "Ver mensagem completa" para emails > 102 KB,
     o que é aceitável e muito melhor que enviar um PDF em anexo.
     """
+    # Tentar Mailgun primeiro (não depende de SMTP local)
+    if _send_via_mailgun(assunto, html, GMAIL_RECIPIENT):
+        return True
+    # Fallback: SMTP Gmail
+
     try:
         gmail_user, gmail_password = _get_gmail_credentials()
     except RuntimeError as e:
