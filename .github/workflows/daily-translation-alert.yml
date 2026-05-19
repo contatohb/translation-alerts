@@ -50,9 +50,13 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           # Gmail SMTP — envio do HTML premium sem limite de tamanho
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_USER: ${{ secrets.GMAIL_SMTP_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+          GMAIL_RECIPIENT: ${{ secrets.MONITOR_RECIPIENT }}
+          MONITOR_RECIPIENT: ${{ secrets.MONITOR_RECIPIENT }}
+          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
+          MAILGUN_DOMAIN: ${{ secrets.MAILGUN_DOMAIN }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
           TC_COOKIE_LGN: ${{ secrets.TC_COOKIE_LGN }}
           # Credenciais dos sites de vagas (para scrapers autenticados)
           TC_USERNAME: ${{ secrets.TC_USERNAME }}
