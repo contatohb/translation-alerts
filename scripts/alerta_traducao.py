@@ -78,7 +78,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────
 
 SUPABASE_URL      = os.getenv("SUPABASE_URL", "https://wuadkgmggkmyglxpxeyh.supabase.co").strip()
-SUPABASE_KEY      = os.getenv("SUPABASE_KEY", "").strip()
+SUPABASE_KEY      = (os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
 GMAIL_USER        = os.getenv("GMAIL_USER", "huddsonviana@gmail.com").strip()
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
 GMAIL_RECIPIENT   = os.getenv("GMAIL_RECIPIENT", "huddsonviana@gmail.com").strip()
