@@ -528,10 +528,10 @@ def main():
     novas_exibidas = _filtrar_td(novas)
     n_exibidas = len(novas_exibidas)
 
-    if novas:
-        assunto = f"[Tradução] {n_exibidas} nova(s) vaga(s) — {date_str}"
-    else:
-        assunto = f"[Tradução] Nenhuma vaga nova hoje — {date_str}"
+    if not novas:
+        logger.info("Nenhuma vaga nova — email não enviado.")
+        return 0
+    assunto = f"[Tradução] {n_exibidas} nova(s) vaga(s) — {date_str}"
 
     # Enviar via SMTP (HTML completo, sem limite de tamanho)
     logger.info(f"Enviando email via SMTP para {GMAIL_RECIPIENT}...")
