@@ -122,12 +122,15 @@ class SupabaseClient:
             logger.warning(f"Supabase GET erro: {e}")
             return None
 
-    def _post(self, path: str, data: dict | list) -> bool:
+    def _post(self, path: str, data: dict | list, prefer: str = None) -> bool:
         try:
             import requests
+            headers = dict(self._headers)
+            if prefer:
+                headers["Prefer"] = prefer
             r = requests.post(
                 f"{self.url}/rest/v1/{path}",
-                headers=self._headers,
+                headers=headers,
                 json=data,
                 timeout=15,
             )
@@ -178,6 +181,7 @@ class SupabaseClient:
         return self._post(
             "traducao_vagas_vistas?on_conflict=url",
             rows,
+            prefer="resolution=ignore-duplicates,return=minimal",
         )
 
     def registrar_execucao(self, dados: dict) -> bool:
