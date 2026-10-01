@@ -1,8 +1,8 @@
 name: Daily Translation Alert
 
+# Agendamento desativado em 2026-10-01 a pedido do usuário (alerta de
+# tradução não interessa mais). Só roda se disparado manualmente.
 on:
-  schedule:
-    - cron: '0 11 * * *'  # 08:00 BRT (UTC-3 = 11:00 UTC)
   workflow_dispatch: {}
 
 permissions:
